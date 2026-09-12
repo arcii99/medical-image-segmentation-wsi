@@ -1,0 +1,201 @@
+<mxfile host="app.diagrams.net" modified="2026-09-12T00:00:00.000Z" agent="wsi-metastasis-seg" version="24.0.0" type="device">
+  <diagram name="WSI Pipeline Architecture" id="wsi-arch-1">
+    <mxGraphModel dx="2200" dy="1900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1700" pageHeight="1750" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- ============ TITLE ============ -->
+        <mxCell id="title" value="wsi-metastasis-seg &#8212; Gigapixel WSI Tumor Segmentation Pipeline" style="text;html=1;align=center;verticalAlign=middle;fontSize=24;fontStyle=1;fontColor=#1F4E79;" vertex="1" parent="1">
+          <mxGeometry x="40" y="10" width="1620" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="subtitle" value="Governing constraint: nothing at level-0 resolution is ever materialised in full. Data moves between modules as COORDINATES; pixels are read lazily in bounded windows and discarded." style="text;html=1;align=center;verticalAlign=middle;fontSize=12;fontStyle=2;fontColor=#444444;" vertex="1" parent="1">
+          <mxGeometry x="40" y="46" width="1620" height="26" as="geometry" />
+        </mxCell>
+
+        <!-- ============ LANE BACKGROUNDS ============ -->
+        <mxCell id="laneA" value="STAGE A &#8212; INGEST&#10;(CPU, offline, once per slide)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F4F8FB;strokeColor=#9BB7CE;dashed=1;verticalAlign=top;align=left;spacingLeft=12;spacingTop=8;fontSize=13;fontStyle=1;fontColor=#1F4E79;" vertex="1" parent="1">
+          <mxGeometry x="40" y="85" width="1620" height="470" as="geometry" />
+        </mxCell>
+        <mxCell id="laneB" value="STAGE B &#8212; TRAIN&#10;(GPU, online)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F6F4FB;strokeColor=#B0A3CE;dashed=1;verticalAlign=top;align=left;spacingLeft=12;spacingTop=8;fontSize=13;fontStyle=1;fontColor=#4B3A8C;" vertex="1" parent="1">
+          <mxGeometry x="40" y="640" width="1620" height="330" as="geometry" />
+        </mxCell>
+        <mxCell id="laneC" value="STAGE C &#8212; INFER &amp; RECONSTRUCT&#10;(GPU, per slide)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F3FAF4;strokeColor=#95C39B;dashed=1;verticalAlign=top;align=left;spacingLeft=12;spacingTop=8;fontSize=13;fontStyle=1;fontColor=#2D6B36;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1055" width="1620" height="630" as="geometry" />
+        </mxCell>
+
+        <!-- ============ STAGE A ============ -->
+        <mxCell id="A1" value="Raw WSI&#10;pyramidal TIFF / SVS&#10;&#8776;30 GB uncompressed" style="shape=document;whiteSpace=wrap;html=1;boundedLbl=1;fillColor=#F8CECC;strokeColor=#B85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="70" y="145" width="170" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="A2" value="SlideReader&#10;&lt;i&gt;io/slide.py&lt;/i&gt;&#10;backend chain, RGBA&#8594;RGB on white,&#10;MPP resolved from file" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="290" y="140" width="200" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="A3" value="Thumbnail&#10;level &#8776; 8 &#181;m/px&#10;(2.8k &#215; 6.6k)" style="shape=note;whiteSpace=wrap;html=1;size=14;fillColor=#FFF2CC;strokeColor=#D6B656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="540" y="145" width="150" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="A4" value="TissueLocalizer&#10;&lt;i&gt;preprocess/tissue.py&lt;/i&gt;&#10;1. artifact mask (ink, black) FIRST&#10;2. Otsu(saturation) &#8746; Otsu(darkness)&#10;3. floors: sat&#8805;20, grey&#8805;40&#10;4. morphology in &#181;m" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontSize=11;align=left;spacingLeft=10;" vertex="1" parent="1">
+          <mxGeometry x="740" y="130" width="250" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="A5" value="tissue_mask.png&#10;bool, thumbnail res&#10;guard: 0.01 &#8804; mean &#8804; 0.90" style="shape=note;whiteSpace=wrap;html=1;size=14;fillColor=#FFF2CC;strokeColor=#D6B656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1040" y="145" width="170" height="80" as="geometry" />
+        </mxCell>
+
+        <mxCell id="A6" value="Annotation XML&#10;polygon vertices&#10;groups _0/_1/_2" style="shape=document;whiteSpace=wrap;html=1;boundedLbl=1;fillColor=#F8CECC;strokeColor=#B85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="70" y="290" width="170" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="A7" value="AnnotationParser&#10;&lt;i&gt;io/annotations.py&lt;/i&gt;&#10;tumor = union(_0,_1)&#10;geom = tumor &#8722; union(_2)&#10;buffer(0) repairs self-intersections" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontSize=11;align=left;spacingLeft=10;" vertex="1" parent="1">
+          <mxGeometry x="290" y="285" width="230" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="A8" value="TumorGeometry&#10;VECTOR polygons, level-0 coords&#10;+ STRtree spatial index&#10;(never rasterised whole)" style="shape=note;whiteSpace=wrap;html=1;size=14;fillColor=#FFF2CC;strokeColor=#D6B656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="570" y="290" width="220" height="90" as="geometry" />
+        </mxCell>
+
+        <mxCell id="A9" value="PatchIndexer&#10;&lt;i&gt;preprocess/patching.py&lt;/i&gt;&#10;grid &#215; tissue_frac &#215; tumor_frac&#10;tumor_frac by exact POLYGON AREA&#10;(1.2 ms/patch, not 45 min/slide)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontSize=11;align=left;spacingLeft=10;" vertex="1" parent="1">
+          <mxGeometry x="740" y="415" width="250" height="105" as="geometry" />
+        </mxCell>
+        <mxCell id="A10" value="patches.parquet&#10;slide_id, x0, y0, level, size,&#10;tissue_frac, tumor_frac, split&#10;&#8776;40 B/row &#8594; 120 MB for 400 slides" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;fillColor=#D5E8D4;strokeColor=#82B366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1040" y="405" width="250" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="A11" value="slides.parquet&#10;mpp0, level_w, residual_scale,&#10;patient_id, split, qc_flag" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;fillColor=#D5E8D4;strokeColor=#82B366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1350" y="270" width="240" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="Anote" value="Splits assigned HERE, once,&#10;by hash(patient_id) &#8212; never&#10;recomputed at train time (BUG-007)" style="text;html=1;align=left;verticalAlign=middle;fontSize=10;fontStyle=2;fontColor=#B85450;" vertex="1" parent="1">
+          <mxGeometry x="1350" y="390" width="250" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- Stage A edges -->
+        <mxCell id="eA1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#6C8EBF;strokeWidth=2;" edge="1" parent="1" source="A1" target="A2"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eA2" value="read_level()" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#6C8EBF;strokeWidth=2;fontSize=10;" edge="1" parent="1" source="A2" target="A3"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eA3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#6C8EBF;strokeWidth=2;" edge="1" parent="1" source="A3" target="A4"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eA4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#6C8EBF;strokeWidth=2;" edge="1" parent="1" source="A4" target="A5"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eA5" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#6C8EBF;strokeWidth=2;" edge="1" parent="1" source="A6" target="A7"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eA6" value="level-0 dims (bbox check)" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;dashed=1;strokeColor=#999999;fontSize=10;" edge="1" parent="1" source="A2" target="A7"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eA7" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#6C8EBF;strokeWidth=2;" edge="1" parent="1" source="A7" target="A8"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eA8" value="gate patches" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#6C8EBF;strokeWidth=2;fontSize=10;" edge="1" parent="1" source="A5" target="A9"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eA9" value="label patches" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#6C8EBF;strokeWidth=2;fontSize=10;" edge="1" parent="1" source="A8" target="A9"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eA10" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#82B366;strokeWidth=2;" edge="1" parent="1" source="A9" target="A10"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eA11" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#82B366;strokeWidth=2;" edge="1" parent="1" source="A2" target="A11"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="390" y="110" /><mxPoint x="1470" y="110" /></Array></mxGeometry></mxCell>
+
+        <!-- ============ STAGE B ============ -->
+        <mxCell id="B1" value="patches.parquet&#10;(coordinates only)" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=13;fillColor=#D5E8D4;strokeColor=#82B366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="70" y="700" width="160" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="B2" value="BalancedSampler&#10;&lt;i&gt;data/sampler.py&lt;/i&gt;&#10;1 tumor : 3 normal&#10;+ 10% boundary bucket&#10;+ hard negatives from epoch 8" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E1D5E7;strokeColor=#9673A6;fontSize=11;align=left;spacingLeft=10;" vertex="1" parent="1">
+          <mxGeometry x="280" y="690" width="215" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="B3" value="PatchDataset&#10;&lt;i&gt;data/dataset.py&lt;/i&gt;&#10;LAZY read_region per index&#10;handles opened per-PID (BUG-002)&#10;&#177;128 px jitter" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E1D5E7;strokeColor=#9673A6;fontSize=11;align=left;spacingLeft=10;" vertex="1" parent="1">
+          <mxGeometry x="545" y="690" width="225" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="B4" value="Augment&#10;GEOMETRIC: D4 &#8594; image + mask&#10;PHOTOMETRIC: HED jitter, blur,&#10;JPEG &#8594; image ONLY (BUG-011)&#10;assert mask &#8712; {0,1}" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E1D5E7;strokeColor=#9673A6;fontSize=11;align=left;spacingLeft=10;" vertex="1" parent="1">
+          <mxGeometry x="820" y="690" width="255" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="B5" value="UNet + EfficientNet-B0&#10;6.3 M params, bf16 AMP&#10;x [16,3,512,512] &#8594; logits [16,1,512,512]&#10;encoder frozen 2 epochs" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E1D5E7;strokeColor=#9673A6;fontSize=11;align=left;spacingLeft=10;" vertex="1" parent="1">
+          <mxGeometry x="1125" y="690" width="265" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="B6" value="Loss = 0.5&#183;BCE(pos_weight=2)&#10;+ 0.5&#183;SoftDice (per-image)&#10;AdamW, cosine + 3ep warmup" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1125" y="845" width="265" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="B7" value="best.pt&#10;weights + EMA + optimiser&#10;+ fitted threshold &#964;&#10;+ git SHA + dirty flag&#10;+ config + index_hash + seed" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=13;fillColor=#D5E8D4;strokeColor=#82B366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1440" y="835" width="200" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="Bnote" value="&#964; is fitted on validation, NOT 0.5.&#10;Balanced sampling distorts the prior,&#10;so the cut-off must be re-fitted.&#10;&#964; travels through 5 modules &#8212; any&#10;one defaulting to 0.5 = 5&#8211;10 pt error." style="text;html=1;align=left;verticalAlign=middle;fontSize=10;fontStyle=2;fontColor=#B85450;" vertex="1" parent="1">
+          <mxGeometry x="70" y="835" width="280" height="90" as="geometry" />
+        </mxCell>
+
+        <mxCell id="eB1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#9673A6;strokeWidth=2;" edge="1" parent="1" source="B1" target="B2"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eB2" value="indices" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#9673A6;strokeWidth=2;fontSize=10;" edge="1" parent="1" source="B2" target="B3"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eB3" value="512&#178; patch + mask" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#9673A6;strokeWidth=2;fontSize=10;" edge="1" parent="1" source="B3" target="B4"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eB4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#9673A6;strokeWidth=2;" edge="1" parent="1" source="B4" target="B5"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eB5" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#D79B00;strokeWidth=2;" edge="1" parent="1" source="B5" target="B6"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eB6" value="backward" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;dashed=1;strokeColor=#D79B00;fontSize=10;" edge="1" parent="1" source="B6" target="B5"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="1100" y="885" /><mxPoint x="1100" y="745" /></Array></mxGeometry></mxCell>
+        <mxCell id="eB7" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#82B366;strokeWidth=2;" edge="1" parent="1" source="B6" target="B7"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eB8" value="LAZY PIXEL READ&#10;(raw WSI is a runtime dependency)" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;dashed=1;strokeColor=#B85450;strokeWidth=2;fontSize=10;fontColor=#B85450;" edge="1" parent="1" source="A1" target="B3"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="155" y="600" /><mxPoint x="657" y="600" /></Array></mxGeometry></mxCell>
+
+        <!-- ============ STAGE C ============ -->
+        <mxCell id="C1" value="Unseen WSI&#10;+ tissue mask (reused)" style="shape=document;whiteSpace=wrap;html=1;boundedLbl=1;fillColor=#F8CECC;strokeColor=#B85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="70" y="1125" width="170" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="C2" value="SlidingWindowPlanner&#10;&lt;i&gt;infer/sliding_window.py&lt;/i&gt;&#10;stride 256 (50% overlap)&#10;tissue-gated: 20k of 72k positions&#10;margin CLAMPED, never skipped&#10;chunk-aligned traversal order" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#82B366;fontSize=11;align=left;spacingLeft=10;" vertex="1" parent="1">
+          <mxGeometry x="290" y="1110" width="255" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="C3" value="Batched read_region&#10;batch 32, prefetch thread&#10;overlaps IO with GPU" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#82B366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="595" y="1125" width="200" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="C4" value="model + sigmoid&#10;(+ optional 4&#215; D4 TTA)&#10;probs [32,1,512,512] &#8712; [0,1]" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E1D5E7;strokeColor=#9673A6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="845" y="1125" width="215" height="90" as="geometry" />
+        </mxCell>
+
+        <mxCell id="C5" value="GaussianStitcher&#10;&lt;i&gt;infer/stitch.py&lt;/i&gt;&#10;w = exp(&#8722;r&#178;/2&#963;&#178;) + 1e-3,  &#963; = S/8&#10;num += p&#183;w      (FLOAT32 zarr)&#10;den += w        (FLOAT32 zarr)&#10;written at 8&#215; downsample from L0" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#82B366;fontSize=11;align=left;spacingLeft=10;" vertex="1" parent="1">
+          <mxGeometry x="1110" y="1105" width="290" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="C6" value="Coverage assert&#10;den &lt; 1e-6 inside tissue?&#10;&#8594; raise CoverageError" style="rhombus;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1130" y="1285" width="250" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="C7" value="heat = num / (den + &#949;)&#10;cast to float16 ONLY here&#10;range asserted &#8712; [0,1]" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#82B366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="820" y="1305" width="240" height="85" as="geometry" />
+        </mxCell>
+        <mxCell id="C8" value="heatmap.zarr&#10;float16, 2.0 &#181;m/px, 1024&#178; chunks&#10;148 MB (&#8776;40 MB compressed)&#10;.zattrs: mpp, downsample, &#964;,&#10;git_sha, model_run_id, stride" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=13;fillColor=#D5E8D4;strokeColor=#82B366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="520" y="1290" width="250" height="120" as="geometry" />
+        </mxCell>
+
+        <mxCell id="C9" value="Post-processing&#10;&lt;i&gt;infer/postproc.py&lt;/i&gt;&#10;threshold &#964; (from checkpoint)&#10;fill holes&#10;drop components &lt; 0.02 mm&#178;&#10;opening with 10 &#181;m disk&#10;ALL in physical units, not px" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#82B366;fontSize=11;align=left;spacingLeft=10;" vertex="1" parent="1">
+          <mxGeometry x="290" y="1475" width="250" height="140" as="geometry" />
+        </mxCell>
+        <mxCell id="C10" value="Overlay&#10;jet heatmap &#945;=0.45&#10;over thumbnail,&#10;lesion outlines" style="shape=note;whiteSpace=wrap;html=1;size=14;fillColor=#FFF2CC;strokeColor=#D6B656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="600" y="1485" width="170" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="C11" value="Evaluation&#10;&lt;i&gt;eval/&lt;/i&gt;&#10;1. patch Dice / IoU&#10;2. FROC (PRIMARY) &#8212; sensitivity&#10;    @ 0.25/0.5/1/2/4/8 FP per slide&#10;3. slide AUC&#10;+ 1000&#215; slide-level bootstrap CI" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;fontSize=11;align=left;spacingLeft=10;" vertex="1" parent="1">
+          <mxGeometry x="830" y="1465" width="290" height="150" as="geometry" />
+        </mxCell>
+        <mxCell id="C12" value="reports/{run_id}/&#10;metrics.json, froc.png,&#10;per_slide.csv,&#10;failure_gallery/" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=13;fillColor=#D5E8D4;strokeColor=#82B366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1180" y="1475" width="220" height="120" as="geometry" />
+        </mxCell>
+
+        <mxCell id="eC1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#82B366;strokeWidth=2;" edge="1" parent="1" source="C1" target="C2"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eC2" value="level-0 coords" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#82B366;strokeWidth=2;fontSize=10;" edge="1" parent="1" source="C2" target="C3"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eC3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#82B366;strokeWidth=2;" edge="1" parent="1" source="C3" target="C4"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eC4" value="probs + coords" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#82B366;strokeWidth=2;fontSize=10;" edge="1" parent="1" source="C4" target="C5"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eC5" value="loop over all batches" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;dashed=1;strokeColor=#999999;fontSize=10;" edge="1" parent="1" source="C5" target="C3"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="1255" y="1075" /><mxPoint x="695" y="1075" /></Array></mxGeometry></mxCell>
+        <mxCell id="eC6" value="finalize()" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#82B366;strokeWidth=2;fontSize=10;" edge="1" parent="1" source="C5" target="C6"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eC7" value="pass" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#82B366;strokeWidth=2;fontSize=10;" edge="1" parent="1" source="C6" target="C7"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eC8" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#82B366;strokeWidth=2;" edge="1" parent="1" source="C7" target="C8"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eC9" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#82B366;strokeWidth=2;" edge="1" parent="1" source="C8" target="C9"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eC10" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#82B366;strokeWidth=2;" edge="1" parent="1" source="C9" target="C10"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eC11" value="lesions" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#D79B00;strokeWidth=2;fontSize=10;" edge="1" parent="1" source="C9" target="C11"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="415" y="1660" /><mxPoint x="975" y="1660" /></Array></mxGeometry></mxCell>
+        <mxCell id="eC12" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#82B366;strokeWidth=2;" edge="1" parent="1" source="C11" target="C12"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eC13" value="checkpoint: weights + &#964;&#10;(architecture built from CKPT config,&#10;never from the live config file)" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;dashed=1;strokeColor=#B85450;strokeWidth=2;fontSize=10;fontColor=#B85450;" edge="1" parent="1" source="B7" target="C4"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="1540" y="1020" /><mxPoint x="952" y="1020" /></Array></mxGeometry></mxCell>
+        <mxCell id="eC14" value="tissue mask reused from Stage A" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;dashed=1;strokeColor=#999999;fontSize=10;" edge="1" parent="1" source="A5" target="C2"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="1125" y="185" /><mxPoint x="1125" y="600" /><mxPoint x="20" y="600" /><mxPoint x="20" y="1170" /></Array></mxGeometry></mxCell>
+        <mxCell id="Cnote" value="A HOLE in the heatmap is indistinguishable from a&#10;confident negative. No metric would ever reveal it &#8212;&#10;hence a hard assert BEFORE anything is written." style="text;html=1;align=left;verticalAlign=middle;fontSize=10;fontStyle=2;fontColor=#B85450;" vertex="1" parent="1">
+          <mxGeometry x="1420" y="1295" width="230" height="70" as="geometry" />
+        </mxCell>
+
+        <!-- ============ RESOLUTION LADDER PANEL ============ -->
+        <mxCell id="ladder" value="THE RESOLUTION LADDER &#8212; three resolutions in play at once&#10;&#10;Level 0 (native)   0.25 &#181;m/px (40&#215;)   90k &#215; 210k   &#8594; COORDINATE SPACE ONLY&#10;Working level      0.50 &#181;m/px (20&#215;)   45k &#215; 105k   &#8594; patch pixels, model input&#10;Thumbnail level    8.00 &#181;m/px (1.25&#215;)  2.8k &#215; 6.6k   &#8594; tissue mask, planning, QC&#10;&#10;INV-1  every persisted coordinate is in LEVEL-0 pixels&#10;INV-2  downsample factors come from the FILE, never from 2^level&#10;          (real value 1.9992175 &#8594; 205 px drift across a 105k slide)&#10;&#10;read_region(location, level, size)&#10;                &#8593;                    &#8593;&#10;        ALWAYS level-0      ALWAYS pixels AT that level" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#1F4E79;align=left;verticalAlign=top;spacingLeft=12;spacingTop=8;fontSize=11;fontFamily=Courier New;" vertex="1" parent="1">
+          <mxGeometry x="70" y="405" width="620" height="130" as="geometry" />
+        </mxCell>
+
+        <!-- ============ LEGEND ============ -->
+        <mxCell id="legendBox" value="LEGEND" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#888888;align=left;verticalAlign=top;spacingLeft=10;spacingTop=6;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1180" y="1120" width="0" height="0" as="geometry" />
+        </mxCell>
+        <mxCell id="lg1" value="process / module" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="70" y="1640" width="130" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="lg2" value="persisted artifact" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=8;fillColor=#D5E8D4;strokeColor=#82B366;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="215" y="1635" width="130" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="lg3" value="in-memory data" style="shape=note;whiteSpace=wrap;html=1;size=8;fillColor=#FFF2CC;strokeColor=#D6B656;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="360" y="1640" width="130" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="lg4" value="guard / hard assert" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="505" y="1640" width="140" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="lg5" value="&#8212;&#8212;&#8212; data flow            - - - - control / lazy read / reuse" style="text;html=1;align=left;verticalAlign=middle;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="660" y="1640" width="400" height="30" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

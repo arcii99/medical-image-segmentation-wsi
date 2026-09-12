@@ -1,0 +1,16 @@
+seed: 1337
+paths:
+  root: data
+  raw_dir: data/raw
+  artifacts: artifacts
+  tissue: artifacts/tissue
+  index: artifacts/index
+  ckpt: artifacts/ckpt
+  heatmaps: artifacts/heatmaps
+  reports: artifacts/reports
+hw:
+  cpu_workers: 8
+  dataloader_workers: 8
+  device: cuda
+  amp_dtype: bfloat16
+log_every: 50

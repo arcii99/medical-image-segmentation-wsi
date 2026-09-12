@@ -1,0 +1,15 @@
+infer:
+  batch_size: 32
+  stride: 256                 # 50% overlap; required by the stitcher (ADR-004)
+  min_tissue: 0.02
+  tta: false
+  heat_downsample: 8          # 2.0 um/px heatmap (ADR-009)
+  sigma_divisor: 8.0
+  chunk: 1024
+postproc:
+  min_lesion_mm2: 0.02
+  opening_um: 10.0
+  fill_holes: true
+eval:
+  froc_points: [0.25, 0.5, 1.0, 2.0, 4.0, 8.0]
+  bootstrap_n: 1000

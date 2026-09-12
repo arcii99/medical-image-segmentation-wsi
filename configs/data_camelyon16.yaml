@@ -1,0 +1,24 @@
+data:
+  target_mpp: 0.50            # 20x; resolved per slide by MPP, not level index (ADR-002)
+  mpp_tolerance: 0.05
+  thumbnail_mpp: 8.00
+  augment: true
+tissue:
+  median_blur: 7
+  close_um: 40.0
+  open_um: 24.0
+  min_object_mm2: 0.02
+  bimodality_min: 0.08
+  floor_sat: 20
+  floor_gray: 40
+patching:
+  size: 512
+  stride: 512                 # train: non-overlapping + jitter (ADR-004)
+  min_tissue: 0.10
+  tumor_threshold: 0.05
+  jitter: 128
+splits:
+  # CAMELYON16 is one slide per case, so the slide IS the patient.
+  # Never leave this to a heuristic -- see src/utils/splits.py.
+  patient_from: slide_id
+  bounds: [70, 85]            # train < 70 <= val < 85 <= test

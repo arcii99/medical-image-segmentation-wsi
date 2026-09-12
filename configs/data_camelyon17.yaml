@@ -1,0 +1,7 @@
+# CAMELYON17: 5 slides per patient, 5 medical centres.
+# Inherits everything else from data_camelyon16.yaml.
+splits:
+  # patient_017_node_2.tif -> patient_017
+  # All 5 nodes of a patient MUST land in the same split.
+  patient_from: camelyon17
+  bounds: [70, 85]

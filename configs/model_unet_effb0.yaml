@@ -1,0 +1,27 @@
+model:
+  name: unet_effb0
+  encoder: efficientnet-b0
+  encoder_weights: imagenet
+  in_channels: 3
+  classes: 1
+loss:
+  name: bce_dice
+  w_bce: 0.5
+  w_dice: 0.5
+  pos_weight: 2.0
+train:
+  batch_size: 16
+  lr_decoder: 3.0e-4
+  lr_encoder: 3.0e-5
+  lr_scale_with_batch: true
+  lr_reference_batch: 16
+  weight_decay: 1.0e-4
+  warmup_epochs: 3
+  max_epochs: 40
+  grad_clip: 1.0
+  freeze_encoder_epochs: 2
+  ema_decay: 0.999
+  early_stop_patience: 8
+  neg_per_pos: 3
+  hard_negative_start_epoch: 8
+  hard_negative_every: 4

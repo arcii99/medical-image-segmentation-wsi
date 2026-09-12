@@ -1,0 +1,32 @@
+[project]
+name = "wsi-metastasis-seg"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.26", "scipy>=1.11", "opencv-python-headless>=4.9",
+  "shapely>=2.0", "pandas>=2.1", "pyarrow>=14", "zarr>=2.16", "numcodecs>=0.12",
+  "tiffslide>=2.3", "tifffile>=2024.1", "imageio>=2.33", "PyYAML>=6.0",
+  # imagecodecs MUST be declared explicitly even though tiffslide pulls it in.
+  # It ships compiled extensions linked against numpy's C API. If an older
+  # build is already present (e.g. from conda), pip reports it as satisfied,
+  # upgrades numpy anyway, and the pair goes ABI-incompatible:
+  #   ValueError: numpy.dtype size changed ... Expected 96 ..., got 88
+  # Naming it here forces pip to resolve both together.
+  "imagecodecs>=2024.6.1",
+]
+
+[project.optional-dependencies]
+train = ["torch>=2.2", "segmentation-models-pytorch>=0.3.3"]
+dev = ["pytest>=8", "pytest-cov", "ruff", "import-linter", "pre-commit"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 92
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+ignore = ["E501"]

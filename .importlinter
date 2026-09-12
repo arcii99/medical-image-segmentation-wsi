@@ -1,0 +1,22 @@
+[importlinter]
+root_package = src
+include_external_packages = True
+
+[importlinter:contract:layers]
+name = Layered architecture (Architecture.md section 7)
+type = layers
+layers =
+    src.eval
+    src.infer
+    src.train
+    src.models
+    src.data
+    src.preprocess
+    src.io
+    src.utils
+
+[importlinter:contract:models-are-pure]
+name = models must not do IO
+type = forbidden
+source_modules = src.models
+forbidden_modules = src.io, src.data, src.utils.logging
