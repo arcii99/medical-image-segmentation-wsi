@@ -9,7 +9,8 @@ from __future__ import annotations
 import hashlib
 import re
 
-__all__ = ["assign", "patient_id", "SPLITS", "PATIENT_RULES"]
+__all__ = ["assign", "assign_stratified", "patient_id", "SPLITS",
+           "PATIENT_RULES"]
 
 SPLITS = ("train", "val", "test")
 
@@ -61,3 +62,54 @@ def assign(patient_id: str, seed: int = 1337,
     if bucket < lo:
         return "train"
     return "val" if bucket < hi else "test"
+
+
+def assign_stratified(
+    patient_class: dict[str, str],
+    seed: int = 1337,
+    bounds: tuple[int, int] = (70, 85),
+) -> dict[str, str]:
+    """Assign splits so each class hits the target proportions exactly.
+
+    ``patient_class`` maps patient id -> class label (e.g. "tumor"/"normal").
+
+    Why this exists. Independent per-patient hashing (:func:`assign`) gives the
+    right proportions *in expectation*, but a small cohort can draw badly. On
+    the first real CAMELYON16 subset, 61 tumor patients produced a validation
+    set with 2 tumor slides against an expected 9.2 -- a 0.34% outcome. Two
+    tumor slides cannot support threshold fitting or early stopping, so the
+    run would have been governed by noise.
+
+    Ranking within each class removes the variance: patients are ordered by a
+    seeded hash (so the choice is arbitrary but reproducible) and cut at the
+    proportion boundaries.
+
+    Trade-off against ADR-010. Pure hashing has the property that adding
+    slides never moves an existing slide between splits. Ranking gives that
+    up: a new patient can shift the cut points. This is acceptable because the
+    split is written into ``slides.parquet`` on the first run and read from
+    there afterwards -- but re-running stage 01 on a *grown* cohort will
+    produce a different assignment, and any model trained on the old one must
+    be re-evaluated, not compared across.
+    """
+    lo, hi = bounds
+    by_class: dict[str, list[str]] = {}
+    for pid, cls in patient_class.items():
+        by_class.setdefault(cls, []).append(pid)
+
+    out: dict[str, str] = {}
+    for cls, pids in by_class.items():
+        ordered = sorted(pids, key=lambda p: hashlib.md5(
+            f"{seed}:{cls}:{p}".encode()).hexdigest())
+        n = len(ordered)
+        n_train = round(n * lo / 100)
+        n_val = round(n * (hi - lo) / 100)
+        # Guarantee at least one patient per split once the class has three.
+        if n >= 3:
+            n_val = max(n_val, 1)
+            n_train = min(n_train, n - n_val - 1)
+            n_train = max(n_train, 1)
+        for i, pid in enumerate(ordered):
+            out[pid] = ("train" if i < n_train
+                        else "val" if i < n_train + n_val else "test")
+    return out

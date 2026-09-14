@@ -20,6 +20,7 @@ BUG-002 and :func:`src.data.dataset.worker_init`.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Sequence
@@ -258,6 +259,68 @@ def _rgba_to_rgb_on_white(arr: np.ndarray) -> np.ndarray:
     return np.ascontiguousarray(np.clip(rgb, 0, 255).round().astype(np.uint8))
 
 
+def _philips_mpp(description: str) -> tuple[float, float] | None:
+    """Extract microns-per-pixel from a Philips DP ImageDescription block.
+
+    CAMELYON16's images are Philips scanner exports. They carry no TIFF
+    XResolution tag at all -- the pixel spacing lives inside an XML document
+    stashed in ImageDescription:
+
+        <DataObject ObjectType="DPUfsImport">
+          <Attribute Name="PIM_DP_SCANNED_IMAGES" ...>
+            <Array>
+              <DataObject ObjectType="DPScannedImage">
+                <Attribute Name="PIM_DP_IMAGE_TYPE" ...>WSI</Attribute>
+                <Attribute Name="DICOM_PIXEL_SPACING" ...>"0.00025" "0.00025"</Attribute>
+
+    The file contains several scanned images -- the WSI itself plus a macro
+    photograph and a label photograph -- each with its own spacing, so the
+    WSI entry must be selected rather than taking the first match. Spacing is
+    in millimetres; we return microns.
+    """
+    import xml.etree.ElementTree as _ET  # noqa: PLC0415
+
+    try:
+        root = _ET.fromstring(description)
+    except _ET.ParseError:
+        return None
+
+    def _spacings(node) -> list[float]:
+        vals: list[float] = []
+        for attr in node.iter("Attribute"):
+            if "PIXEL_SPACING" not in (attr.get("Name") or "").upper():
+                continue
+            for tok in re.findall(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?",
+                                  attr.text or ""):
+                v = float(tok)
+                if v > 0:
+                    vals.append(v)
+        return vals
+
+    wsi: list[float] = []
+    for obj in root.iter("DataObject"):
+        kind = ""
+        for attr in obj.findall("Attribute"):
+            if (attr.get("Name") or "").upper().endswith("IMAGE_TYPE"):
+                kind = (attr.text or "").strip().upper()
+        if kind == "WSI":
+            wsi.extend(_spacings(obj))
+
+    # Fall back to the finest spacing anywhere in the document: the macro and
+    # label photographs are far coarser than the WSI, so the minimum is the
+    # WSI's own spacing.
+    vals = wsi or _spacings(root)
+    if not vals:
+        return None
+    mm = min(vals)
+    if not 1e-5 < mm < 1e-2:            # 0.01 - 10 um/px, sanity band
+        log.warning("Philips pixel spacing %.6g mm is outside the plausible "
+                    "range; ignoring", mm)
+        return None
+    um = mm * 1000.0
+    return um, um
+
+
 def _resolve_mpp(props: dict[str, Any]) -> tuple[float, float]:
     """Extract microns-per-pixel, or raise.
 
@@ -281,6 +344,19 @@ def _resolve_mpp(props: dict[str, Any]) -> tuple[float, float]:
     if aperio:
         return aperio, aperio
 
+    # tiffslide derives these from the TIFF resolution tags when present.
+    tsx, tsy = _f(props.get("tiffslide.mpp-x")), _f(props.get("tiffslide.mpp-y"))
+    if tsx and tsy:
+        return tsx, tsy
+
+    # Philips DP exports (all of CAMELYON16) have no resolution tag; the
+    # spacing is inside the ImageDescription XML.
+    desc = props.get("tiff.ImageDescription") or props.get("tiffslide.comment")
+    if desc and "DPUfsImport" in str(desc):
+        got = _philips_mpp(str(desc))
+        if got:
+            return got
+
     # TIFF resolution tags: pixels per RESOLUTIONUNIT.
     unit = str(props.get("tiff.ResolutionUnit", "")).lower()
     xres, yres = _f(props.get("tiff.XResolution")), _f(props.get("tiff.YResolution"))
@@ -291,9 +367,9 @@ def _resolve_mpp(props: dict[str, Any]) -> tuple[float, float]:
             return 25_400.0 / xres, 25_400.0 / yres
 
     raise SlideReadError(
-        "no microns-per-pixel metadata found "
-        f"(checked openslide.mpp-*, aperio.MPP, tiff.*Resolution); "
-        f"available keys: {sorted(props)[:12]}"
+        "no microns-per-pixel metadata found (checked openslide.mpp-*, "
+        "aperio.MPP, tiffslide.mpp-*, Philips ImageDescription, "
+        f"tiff.*Resolution); available keys: {sorted(props)[:12]}"
     )
 
 

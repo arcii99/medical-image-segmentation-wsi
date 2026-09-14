@@ -855,3 +855,309 @@ A heuristic that reads plausibly on one dataset can be silently destructive on
 another. The deeper error was not the regex — it was having no check that the
 resulting splits were usable. The gate matters more than the fix, because the
 gate catches the next variant of this too.
+
+---
+
+## BUG-021 — Half the download was label masks, not slides
+
+**Status:** Fixed · **Severity:** S1 · **Provenance:** `[OBSERVED]`
+**Surfaced in:** gate V0.7 on the real cohort
+
+### Symptom
+382 slides downloaded, 239 GB. 131 failed to open; 251 opened cleanly but
+reported implausible microns-per-pixel — six clusters, three of them at
+exactly 8× the other three.
+
+### The decisive observation
+The 8× was exact in every pair, never approximate:
+```
+1.9447 / 0.2431 = 8.000      1.8106 / 0.2263 = 8.000
+1.8153 / 0.2269 = 8.000
+```
+Exactness rules out scanner variation and points at a structural cause. The
+raw dump then showed `axes=YX`, `photometric=1` — single-channel images. These
+were not photographs at all.
+
+### Root cause
+The bucket holds four parallel trees:
+```
+CAMELYON16/images/             399 files  700.8 GB   the WSIs
+CAMELYON16/masks/              399 files    8.8 GB   rasterised labels
+CAMELYON16/background_tissue/  400 files    0.4 GB   tissue masks, 8x downsampled
+CAMELYON16/annotations/        160 files    0.1 GB   lesion polygons
+```
+`masks/` and `background_tissue/` are also `.tif` and also named `normal_*` /
+`tumor_*`. The fetch planner classified by filename alone, so it happily
+selected them. The three coarse MPP clusters were `background_tissue`, which
+is stored at 8× downsample — hence the exact ratio.
+
+Arithmetic confirms it: 144 mask + 107 tissue = 251, exactly the "readable"
+set; `(239.34 − 9.2) GB ÷ 1.76 GB/slide = 131`, exactly the failure count.
+
+### Fix
+Selection is by bucket prefix, not filename: slides only from
+`CAMELYON16/images/`, annotations only from `CAMELYON16/annotations/`, and
+`*_mask` / `*_tissue` stems excluded outright. The planner now prints what it
+skipped and why, so the exclusion is visible rather than silent.
+
+### Regression guard
+`tests/unit/test_fetch_planner.py` — four cases built on the real bucket layout.
+
+### Lesson
+A filename convention is not a type. Two directories used the same naming
+scheme for entirely different content, and the only reliable discriminator was
+the path. The planner should have been reading the structure it was given
+rather than the structure it assumed.
+
+---
+
+## BUG-022 — Every real slide rejected for missing microns-per-pixel
+
+**Status:** Fixed · **Severity:** S1 (total blocker) · **Provenance:** `[OBSERVED]`
+**Surfaced in:** gate V0.7, once BUG-021 revealed that the 131 "failures" were
+the only real slides in the cohort
+
+### Symptom
+```
+SlideReadError: no microns-per-pixel metadata found
+  (checked openslide.mpp-*, aperio.MPP, tiff.*Resolution);
+  available keys: ['tiff.ImageDescription', 'tiffslide.background-color', ...]
+```
+Not one CAMELYON16 image would open. 100% failure, not a long tail.
+
+### Root cause
+CAMELYON16 images are Philips scanner exports — `Software = "Philips DP v1.0"`.
+They carry **no** `XResolution` tag whatsoever. The pixel spacing is inside an
+XML document stored in `ImageDescription`:
+
+```xml
+<DataObject ObjectType="DPUfsImport">
+  <Attribute Name="PIM_DP_SCANNED_IMAGES" ...>
+    <Array>
+      <DataObject ObjectType="DPScannedImage">
+        <Attribute Name="PIM_DP_IMAGE_TYPE">WSI</Attribute>
+        <Attribute Name="DICOM_PIXEL_SPACING">"0.000243" "0.000243"</Attribute>
+```
+
+ADR-002 deliberately refuses to guess a missing scale, so the reader did
+exactly what it was designed to do — for a format it had never been told about.
+
+### Fix
+`_philips_mpp()` parses the Philips block. Three details matter:
+
+1. The file describes **several** scanned images — the WSI plus a macro
+   photograph and a label photograph — each with its own spacing. Taking the
+   first match would return the macro image's ~0.022 mm, roughly 90× too
+   coarse. The parser selects the entry whose `PIM_DP_IMAGE_TYPE` is `WSI`,
+   falling back to the finest spacing present.
+2. Spacing is in millimetres, not microns.
+3. A value outside 0.01–10 µm/px is rejected rather than used.
+
+Cross-check: the parser returns 0.243 µm/px, and `normal_004_mask.tif` from
+the same scanner independently reports 0.2431 via its TIFF resolution tag.
+
+`tiffslide.mpp-x` was also added to the lookup chain ahead of the raw tags.
+
+### Alternative worth knowing
+OpenSlide has a native Philips TIFF driver. Installing it makes the ADR-001
+fallback chain resolve this without any parsing:
+`conda install -c conda-forge openslide-python`. Both paths now work; the
+parser means the project is not *dependent* on a system library.
+
+### Regression guard
+`tests/unit/test_slide_rgba.py` — four cases, including the macro-vs-WSI
+selection and the implausible-value rejection.
+
+### Lesson
+ADR-002's refuse-rather-than-guess rule behaved correctly and turned a silent
+scale error into a loud, diagnosable blocker. The cost was a hard stop; the
+alternative was 100% of slides training at an invented scale. That trade was
+worth it, and it is the clearest vindication of the loud-failure principle so
+far.
+
+---
+
+## BUG-023 — Tissue guard rejected real lymph node slides
+
+**Status:** Fixed · **Severity:** S2 · **Provenance:** `[OBSERVED]`
+**Surfaced in:** stage 01 on the first real cohort — 4 of 131 slides rejected
+
+### Symptom
+```
+tissue fraction 0.0089 below lower bound 0.01; slide is empty or
+thresholding is too aggressive
+```
+Meanwhile the surviving 127 slides ran from 0.0114 to 0.3077, with a median
+of 0.0896 — far below the 0.15–0.45 band the design had assumed.
+
+### Root cause
+Not a detection failure. A design assumption that did not survive contact
+with the data.
+
+ADR-003 set the contract-A2 lower bound as a **fraction of the slide**, on the
+generic intuition that a whole-slide image is mostly tissue. CAMELYON16 is
+sentinel lymph node sections, and a node is small relative to the glass:
+
+```
+3D Histech slide : 23.4 x 53.1 mm = 1244 mm^2 of glass
+lowest observed  : tissue_frac 0.0114 -> 14.2 mm^2 -> ~3.8 mm across
+```
+
+A 3.8 mm lymph node is entirely normal. The floor was rejecting healthy
+slides, and the four that failed were most likely the smallest nodes in the
+cohort — not the worst masks.
+
+### Fix
+Express the lower bound in **physical area**, matching ADR-012's treatment of
+lesion size: `min_tissue_mm2 = 1.0`. A node smaller than about 1 mm across is
+implausible; a blank slide is 0.00.
+
+The upper bound stays fractional at 0.90, because "most of the slide is
+tissue" really is impossible and that framing is correct for it.
+
+Measured behaviour after the change:
+```
+lowest observed real slide   frac 0.01112   13.82 mm^2   ACCEPTED
+median real slide            frac 0.08868  110.28 mm^2   ACCEPTED
+genuinely near-blank         frac 0.00072    0.90 mm^2   REJECTED
+```
+
+### Consequence for the fixtures
+The synthetic slides are about 2 x 2 mm — roughly 1/300th of a real slide —
+so a guard calibrated in mm² rejects them all. That is the guard being right
+and the fixtures being miniature. `configs/data_fixtures.yaml` now relaxes
+exactly the physical guards and nothing else, so fixture runs exercise the
+same code paths at toy scale.
+
+### Regression guard
+`tests/unit/test_tissue.py` — four cases built on real CAMELYON16 thumbnail
+geometry, including one asserting the guard gives the same answer at two
+thumbnail resolutions.
+
+### Lesson
+This is the third defect in this project traceable to a threshold expressed
+in the wrong units, after ADR-012 and BUG-019. The pattern is consistent
+enough to state as a rule: **if a threshold describes something physical,
+express it in physical units, even when a fraction or a pixel count is more
+convenient to compute.** Gate V0.5 greps for hard-coded pixel constants; it
+should arguably also flag fractional thresholds on physical quantities.
+
+---
+
+## BUG-024 — Stale failure list blocked a clean run
+
+**Status:** Fixed · **Severity:** S3 · **Provenance:** `[OBSERVED]`
+**Surfaced in:** stage 02, immediately after stage 01 first reported
+`ok=131 failed=0`
+
+### Symptom
+```
+ERROR stage02  artifacts/index/failed_slides.csv is present: 4 slides failed
+               stage 01. Acknowledge with --allow-failed, or fix them.
+```
+Stage 01 had just succeeded on every slide. The four failures were from the
+*previous* run, before BUG-023 was fixed.
+
+### Root cause
+Stage 01 wrote `failed_slides.csv` when there were failures but never removed
+it when there were none. Stage 02's guard therefore tested a file that
+recorded history, not current state.
+
+### Why this is worth an entry despite being minor
+The guard exists to stop someone silently training on a subset. Firing on a
+run that fixed every failure teaches exactly the wrong lesson: the apparent
+fix is `--allow-failed`, and once that flag is in the command line it stays
+there and the guard is permanently disabled. **A guard that cries wolf is
+worse than no guard**, because it converts a safety check into a habit of
+overriding safety checks.
+
+### Fix
+1. Stage 01 deletes the file when a run has no failures, and stamps a UTC
+   timestamp into it when it does.
+2. Stage 02 compares the file's mtime against `slides.parquet`. A failure list
+   older than the index it accompanies is reported as stale and ignored,
+   rather than blocking.
+
+### Regression check
+Fixture run with a planted stale `failed_slides.csv`: stage 01 logs
+`all slides succeeded; removed stale failed_slides.csv`, and stage 02 proceeds
+without `--allow-failed`.
+
+---
+
+## BUG-025 — Every annotation polygon treated as a lesion that must be found
+
+**Status:** Fixed · **Severity:** S1 (invalidates the primary metric)
+**Provenance:** `[OBSERVED]` · **Surfaced in:** gate V4.7 on the real index
+
+### Symptom
+```
+lesions total 1,586
+  p50     0.00334 mm^2
+below 0.02 mm^2 : 1,208 / 1,586 (76.2%) -- UNFINDABLE by construction
+FROC sensitivity is therefore capped at 23.8%
+```
+A 23.8% ceiling would make the project's primary metric meaningless.
+
+### The observation that reframed it
+The sizes are not small lesions. They are cells.
+```
+p50  0.00334 mm^2  ~=  58 um across
+p25  0.00097 mm^2  ~=  31 um across
+p5   0.00028 mm^2  ~=  17 um across
+```
+A tumor cell nucleus is 10-20 um. A 17 um "lesion" is one cell; a 31 um one
+is two or three. These are isolated tumor cells, and CAMELYON16 annotates
+them because they are real, not because a detector is expected to report each
+one as a metastasis.
+
+### Root cause
+ADR-013 specified FROC as "sensitivity at N false positives per slide" without
+specifying **which ground-truth objects are in the denominator**, so the
+implementation used all of them. That is not the CAMELYON16 convention and it
+is not clinically meaningful.
+
+Clinically (AJCC), deposits are staged by **largest dimension**, not area:
+
+| category | major axis | stages node positive? |
+|---|---|---|
+| macrometastasis | >= 2.0 mm | yes (pN1+) |
+| micrometastasis | 0.2 - 2.0 mm | yes (pN1mi) |
+| isolated tumor cells | < 0.2 mm | **no** (pN0(i+)) |
+
+The official CAMELYON16 evaluation drops lesions with major axis below 275 um
+from the ground truth entirely: they are not in the denominator, **and** a
+prediction landing on one is not charged as a false positive.
+
+The second half matters as much as the first, and my original scheme got it
+doubly wrong: a model that correctly flagged a cluster of tumor cells was
+penalised twice -- once for the ITC it could not "hit", and again as a false
+positive for having found it.
+
+### Fix
+`src/eval/froc.py` now implements the convention:
+
+* `major_axis_um()` measures largest dimension via the **minimum rotated
+  rectangle**, not an axis-aligned bounding box. A 100 um lesion lying
+  diagonally would otherwise measure 141 um.
+* `classify()` returns macro / micro / itc against the clinical boundaries.
+* `match()` returns `(detections, n_evaluable, n_itc)`. ITC hits are dropped;
+  duplicate hits on one lesion are dropped; only genuine misses are FPs.
+* `qc_index.py` reports the distribution by major axis and by clinical
+  category.
+
+### Consequence
+The 23.8% ceiling does not exist. ITCs leave the denominator, so a sensitivity
+of 1.0 stays reachable. Reported numbers also become comparable with the
+published CAMELYON16 literature, which was the point of using this benchmark.
+
+### Regression guard
+`tests/unit/test_patient_rules.py` -- six cases, including rotation invariance
+of the major axis and the ITC-hit-is-not-an-FP rule.
+
+### Lesson
+A metric name is not a metric definition. "FROC" sounded specified; the
+denominator was not. The defect was invisible in code review and only appeared
+when real annotations produced a number too bad to be plausible -- which is
+its own useful signal. **An implausibly bad result deserves the same suspicion
+as an implausibly good one.**

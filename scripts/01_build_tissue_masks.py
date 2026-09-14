@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import traceback
+from datetime import datetime, timezone
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
@@ -17,11 +18,13 @@ import imageio.v3 as iio
 import pandas as pd
 
 from _common import base_parser, discover, git_state  # noqa: E402
+from src.io import annotations as ann  # noqa: E402
 from src.io.slide import open_slide  # noqa: E402
 from src.preprocess.tissue import TissueConfig, tissue_mask  # noqa: E402
 from src.utils.config import load  # noqa: E402
 from src.utils.logging import setup  # noqa: E402
-from src.utils.splits import assign, patient_id  # noqa: E402
+from src.utils.splits import (assign, assign_stratified,  # noqa: E402
+                              patient_id)
 
 log = logging.getLogger("stage01")
 
@@ -43,12 +46,28 @@ def process_one(args):
             out.parent.mkdir(parents=True, exist_ok=True)
             iio.imwrite(out, (res.mask.astype("uint8") * 255))
             patient = patient_id(slide_id, cfg.splits.get("patient_from", "slide_id"))
+
+            # Parse the annotation here so the split can be stratified by
+            # class. The XML files are small and the slide is already open.
+            xml = Path(path).with_suffix(".xml")
+            geom = ann.load(xml if xml.exists() else None, slide_id,
+                            r.level_dims[0])
+            tumor_mm2 = geom.area_mm2(r.meta.mpp)
+
             return dict(slide_id=slide_id, path=str(path), backend=r.meta.backend,
-                        mpp0=r.meta.mpp, level_w=lw, residual_scale=residual,
-                        level_t=lt, thumb_h=thumb.shape[0], thumb_w=thumb.shape[1],
+                        vendor=r.meta.vendor, mpp0=r.meta.mpp, level_w=lw,
+                        residual_scale=residual, level_t=lt,
+                        thumb_h=thumb.shape[0], thumb_w=thumb.shape[1],
                         tissue_frac=res.tissue_frac, pen_frac=res.pen_frac,
-                        qc_flag=res.qc_flag, patient_id=patient,
-                        split=assign(patient, bounds=tuple(cfg.splits.bounds))), None
+                        qc_flag=res.qc_flag,
+                        sat_threshold=res.sat_threshold,
+                        gray_threshold=res.gray_threshold,
+                        sat_floor_bound=res.sat_threshold <= cfg.tissue.floor_sat,
+                        gray_floor_bound=res.gray_threshold <= cfg.tissue.floor_gray, patient_id=patient,
+                        has_xml=xml.exists(), tumor_mm2=tumor_mm2,
+                        n_lesions=geom.n_lesions,
+                        slide_class="tumor" if tumor_mm2 > 0 else "normal",
+                        split="<pending>"), None
     except Exception as e:
         return None, dict(slide_id=slide_id, path=str(path),
                           error=f"{type(e).__name__}: {e}",
@@ -89,15 +108,43 @@ def main() -> int:
     idx_dir = Path(cfg.paths.index); idx_dir.mkdir(parents=True, exist_ok=True)
     if rows:
         df = pd.DataFrame(rows)
+
+        # Splits are assigned AFTER all slides are known, so each class can be
+        # balanced across train/val/test. Per-slide hashing gets the right
+        # proportions only in expectation and can draw badly on a small
+        # cohort (see assign_stratified).
+        strategy = cfg.splits.get("strategy", "stratified")
+        if strategy == "stratified":
+            pc = dict(zip(df.patient_id, df.slide_class))
+            mapping = assign_stratified(pc, int(cfg.seed),
+                                        tuple(cfg.splits.bounds))
+            df["split"] = df.patient_id.map(mapping)
+        else:
+            df["split"] = [assign(p, bounds=tuple(cfg.splits.bounds))
+                           for p in df.patient_id]
+        log.info("split x class:\n%s",
+                 pd.crosstab(df.slide_class, df.split).to_string())
         sha, dirty = git_state()
         df["git_sha"] = sha; df["dirty"] = dirty
         df.to_parquet(idx_dir / "slides.parquet", index=False)
         for _, r in df.iterrows():
             log.info("%-18s tissue_frac=%.4f qc=%s L%d residual=%.4f",
                      r.slide_id, r.tissue_frac, r.qc_flag, r.level_w, r.residual_scale)
+    # Write the failure list, or REMOVE a stale one from a previous run.
+    #
+    # Leaving it behind makes stage 02's guard fire on history rather than on
+    # current state: a run that fixed every failure still gets blocked, and
+    # the only way forward looks like --allow-failed. A guard that cries wolf
+    # trains people to override it, which is worse than having no guard.
+    failed_csv = idx_dir / "failed_slides.csv"
     if fails:
-        pd.DataFrame(fails).to_csv(idx_dir / "failed_slides.csv", index=False)
-        log.warning("%d slides failed -> %s", len(fails), idx_dir / "failed_slides.csv")
+        df_f = pd.DataFrame(fails)
+        df_f.insert(0, "run_utc", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        df_f.to_csv(failed_csv, index=False)
+        log.warning("%d slides failed -> %s", len(fails), failed_csv)
+    elif failed_csv.exists():
+        failed_csv.unlink()
+        log.info("all slides succeeded; removed stale %s", failed_csv.name)
     log.info("ok=%d failed=%d", len(rows), len(fails))
     return 0 if rows else 1
 

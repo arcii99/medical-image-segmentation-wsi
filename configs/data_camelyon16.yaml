@@ -8,6 +8,9 @@ tissue:
   close_um: 40.0
   open_um: 24.0
   min_object_mm2: 0.02
+  # A sentinel lymph node section is small relative to the glass;
+  # real slides run 1-30% tissue. Guard on absolute area instead.
+  min_tissue_mm2: 1.0
   bimodality_min: 0.08
   floor_sat: 20
   floor_gray: 40
@@ -21,4 +24,8 @@ splits:
   # CAMELYON16 is one slide per case, so the slide IS the patient.
   # Never leave this to a heuristic -- see src/utils/splits.py.
   patient_from: slide_id
+  # 'stratified' balances each class across splits exactly.
+  # 'hash' is the older per-slide scheme: stable when slides are
+  # added, but its proportions are only right in expectation.
+  strategy: stratified
   bounds: [70, 85]            # train < 70 <= val < 85 <= test

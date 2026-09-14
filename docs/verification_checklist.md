@@ -80,6 +80,23 @@ python -m src.utils.config --print-hash configs/base.yaml configs/model_unet_eff
 
 ---
 
+## V0.7 — Cohort pre-flight (run once, immediately after download)
+
+```bash
+python scripts/qc_probe.py --slides-dir data/raw/camelyon16 --csv artifacts/qc_probe.csv
+```
+Metadata and annotations only — no pixel decoding — so a few hundred slides
+take seconds. **Expect:** zero unreadable slides; every slide reporting an MPP;
+all six tumor/normal × train/val/test cells populated; annotation groups drawn
+only from `_0`, `_1`, `_2`.
+
+**Fail if:** any slide lacks MPP (ADR-002 will reject it), any annotation group
+name is unrecognised (the parser treats unknown groups as tumor — BUG-008), or
+any split cell is empty (gate V4.6 will block stage 02 anyway, but finding out
+here costs seconds instead of 40 minutes).
+
+---
+
 ## V1 — `src/io/slide.py` (SlideReader)
 
 ### V1.1 Metadata extraction
@@ -282,6 +299,24 @@ centre distribution max deviation 0.061   (threshold 0.10)   PASS
 ```
 **Fail if** tumor fraction is `0.00 %` (annotations not wired) or `> 20 %`
 (exclusion subtraction or tissue gating broken).
+
+### V4.7 Index audit — tumor coverage and lesion reachability
+```bash
+python scripts/qc_index.py --csv artifacts/qc_index.csv
+```
+**Expect:** median tumor coverage >= 0.95 (annotated tumor area vs area
+captured in the index); no slide below 0.80; every split carrying at least 5
+tumor slides.
+
+**Why coverage matters:** the index contains only patches that passed the
+tissue gate. If a mask clipped a metastasis, those labels are simply absent —
+no error is raised anywhere, and the model is trained to call that region
+normal. This is the only check that catches it.
+
+**Also reports** the fraction of annotated lesions below the post-processing
+floor (ADR-012). Those are unfindable by construction and cap FROC before the
+model runs, so the cap should be known before training rather than inferred
+from a disappointing curve.
 
 ### V4.6 Splits are usable, not merely present (BUG-020)
 ```bash

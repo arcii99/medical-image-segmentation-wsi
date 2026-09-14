@@ -47,14 +47,23 @@ class TissueConfig:
     pen_sat_min: float = 0.35          # normalised saturation
     pen_value_min: float = 0.20        # reject near-black (edges, shadow)
     he_hue_bands: tuple[tuple[float, float], ...] = ((0.70, 0.95), (0.00, 0.10))
-    frac_min: float = 0.01             # contract A2 lower bound
-    frac_max: float = 0.90             # contract A2 upper bound
+    # Contract A2 bounds.
+    #
+    # The lower bound is expressed as PHYSICAL AREA, not as a fraction of the
+    # slide. A CAMELYON16 slide is ~1000-1250 mm^2 of glass carrying a
+    # sentinel lymph node section that is often only 3-12 mm across, so a
+    # perfectly healthy slide can sit at 1% tissue. A fractional floor of 0.01
+    # rejected real slides; the same floor in mm^2 does not, while still
+    # catching a mask that collapsed to nothing.
+    min_tissue_mm2: float = 1.0        # ~1 mm across; below this is not a node
+    frac_max: float = 0.90             # upper bound stays fractional
 
 
 @dataclass
 class TissueResult:
     mask: np.ndarray                   # bool, thumbnail resolution
     tissue_frac: float
+    tissue_mm2: float
     pen_frac: float
     qc_flag: str                       # "ok" | "unimodal_fallback" | "high_pen"
     sat_threshold: int
@@ -128,8 +137,10 @@ def tissue_mask(
         qc = "high_pen"
 
     result = TissueResult(
-        mask=mask.astype(bool), tissue_frac=frac, pen_frac=pen_frac,
-        qc_flag=qc, sat_threshold=int(t_sat), gray_threshold=int(t_gray),
+        mask=mask.astype(bool), tissue_frac=frac,
+        tissue_mm2=float(mask.sum()) * mpp * mpp / 1e6,
+        pen_frac=pen_frac, qc_flag=qc,
+        sat_threshold=int(t_sat), gray_threshold=int(t_gray),
     )
 
     if strict:
@@ -144,10 +155,12 @@ def _assert_contract_a2(r: TissueResult, cfg: TissueConfig) -> None:
             f"tissue fraction {r.tissue_frac:.4f} exceeds upper bound "
             f"{cfg.frac_max}; likely black-border (BUG-001) or ink (BUG-005)"
         )
-    if r.tissue_frac < cfg.frac_min:
+    if r.tissue_mm2 < cfg.min_tissue_mm2:
         raise TissueDetectionError(
-            f"tissue fraction {r.tissue_frac:.4f} below lower bound "
-            f"{cfg.frac_min}; slide is empty or thresholding is too aggressive"
+            f"only {r.tissue_mm2:.3f} mm^2 of tissue detected "
+            f"(minimum {cfg.min_tissue_mm2} mm^2, tissue_frac "
+            f"{r.tissue_frac:.5f}); slide is empty or thresholding is too "
+            "aggressive"
         )
 
 
@@ -257,7 +270,8 @@ def _cli() -> None:
     sparse[190:210, 190:210] = [140, 90, 160]          # ~0.25% tissue
     res = tissue_mask(sparse, mpp, strict=False)
     print(f"near-unimodal (0.25% tissue) -> qc_flag={res.qc_flag} "
-          f"tissue_frac={res.tissue_frac:.4f}   OK")
+          f"tissue_frac={res.tissue_frac:.4f} "
+          f"tissue={res.tissue_mm2:.3f} mm^2   OK")
 
 
 if __name__ == "__main__":

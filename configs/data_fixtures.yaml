@@ -1,0 +1,17 @@
+# Overrides for the synthetic test fixtures.
+#
+# The fixtures are ~2 x 2 mm of simulated glass -- roughly 1/300th the area of
+# a real CAMELYON16 slide. Guards expressed in physical units are therefore
+# correct for real data and far too strict here. This file relaxes exactly
+# those guards and nothing else, so the fixtures still exercise the same code
+# paths.
+#
+#   python scripts/01_build_tissue_masks.py \
+#       --config configs/base.yaml configs/data_camelyon16.yaml \
+#               configs/data_fixtures.yaml \
+#       --slides-dir tests/fixtures/mini
+tissue:
+  min_tissue_mm2: 0.02       # real cohort uses 1.0
+  close_um: 20.0             # fixture thumbnails are coarse; keep kernels small
+  open_um: 12.0
+  min_object_mm2: 0.002

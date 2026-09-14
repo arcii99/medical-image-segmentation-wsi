@@ -165,8 +165,20 @@ back to a fixed conservative threshold and flag the slide for QC.
   tissue border. Irrelevant: a `tissue_frac > 0.10` threshold is used for
   inclusion, not a hard boundary.
 
+### Amendment (2026-09-12, after BUG-023)
+The contract-A2 **lower** bound is expressed in physical area
+(`min_tissue_mm2: 1.0`), not as a fraction of the slide.
+
+A CAMELYON16 slide is 1000–1250 mm² of glass carrying a lymph node section
+often only 3–12 mm across, so real slides run 1–31 % tissue with a median near
+9 %. The original fractional floor of 0.01 rejected four genuine slides. The
+**upper** bound stays fractional at 0.90, because "most of the slide is
+tissue" is impossible in a way that a fraction expresses correctly.
+
 ### Revisit trigger
-Pen-mark false positives exceed 2 % of indexed patches on any cohort.
+Pen-mark false positives exceed 2 % of indexed patches on any cohort, or a
+cohort of resection specimens rather than lymph nodes (where tissue fraction
+is genuinely high and the upper bound may need raising).
 
 ---
 
@@ -470,6 +482,24 @@ normals to another, which would have emptied validation and left the test set
 with no tumor. Gate V4.6 (`assert_splits_usable`) now blocks any index whose
 splits are empty or tumor-free.
 
+### Amendment (2026-09-12, after the first real cohort)
+Split assignment is **stratified by slide class** by default
+(`splits.strategy: stratified`), not per-slide hashing.
+
+Per-slide hashing gives the right proportions only in expectation. On the
+first real CAMELYON16 subset — 61 tumor and 70 normal slides — it produced a
+validation set containing **2 tumor slides** against an expected 9.2, a 0.34%
+draw. Threshold fitting (ADR-006) and early stopping both run on validation;
+neither is meaningful on two slides.
+
+Stratified assignment ranks patients within each class by a seeded hash and
+cuts at the proportion boundaries, so each class hits 70/15/15 exactly. The
+cost is that pure hashing's "adding slides never moves an existing slide"
+property is lost: a grown cohort re-cuts the boundaries. That is acceptable
+because the split is frozen into `slides.parquet` on the first run — but a
+model trained before a cohort change must be re-evaluated, never compared
+across the change.
+
 ### Revisit trigger
 Cohort change that introduces repeated patients across sources, or any new
 cohort (which requires choosing `patient_from` deliberately).
@@ -579,6 +609,21 @@ point estimate alone invites over-reading.
   must preserve — reinforcing the vector-geometry choice in contract A3.
 - Evaluation is slide-bound and slow (~2.5 min/slide); it runs as a separate
   gated stage (V9), not inside the training loop.
+
+### Amendment (2026-09-12, after BUG-025)
+The FROC denominator is now specified, not left implicit.
+
+Ground-truth lesions are classified by **major axis** (minimum rotated
+rectangle), matching AJCC staging: macro >= 2 mm, micro >= 0.2 mm, ITC below
+that. Following the official CAMELYON16 evaluation, lesions with major axis
+< 275 um are excluded from the ground truth entirely -- absent from the
+denominator, and a prediction landing on one is not counted as a false
+positive.
+
+On the first real cohort, 1,586 annotated polygons had a median major axis
+corresponding to roughly 58 um -- individual tumor cells. Scoring each as a
+lesion requiring detection produced an apparent sensitivity ceiling of 23.8%
+and would have penalised the model twice for correctly flagging them.
 
 ### Revisit trigger
 Extension to N-stage classification (CAMELYON17), which needs a patient-level

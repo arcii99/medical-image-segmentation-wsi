@@ -13,6 +13,57 @@ import numpy as np
 
 OPERATING_POINTS = (0.25, 0.5, 1.0, 2.0, 4.0, 8.0)
 
+# CAMELYON16 excludes isolated tumor cells from FROC, by MAJOR AXIS not area.
+#
+# Clinically (AJCC), a deposit under 0.2 mm in largest dimension is "isolated
+# tumor cells" -- pN0(i+) -- and does not stage the node as positive. The
+# official CAMELYON16 evaluation therefore drops lesions whose major axis is
+# below 275 um from the ground truth entirely:
+#
+#   * they are NOT in the denominator, so missing one is not a miss;
+#   * a prediction landing on one is NOT a false positive either.
+#
+# The second half matters as much as the first. Treating ITCs as ordinary
+# negatives would punish a model for flagging real (if unstageable) tumor
+# cells, which is exactly backwards.
+ITC_MAX_AXIS_UM = 275.0
+MACRO_MIN_AXIS_UM = 2000.0
+MICRO_MIN_AXIS_UM = 200.0
+
+
+def major_axis_um(poly, mpp: float) -> float:
+    """Largest dimension of a polygon, in microns.
+
+    Uses the minimum rotated bounding rectangle, which is the standard
+    approximation and is orientation-independent -- unlike the axis-aligned
+    bounding box, which inflates the size of a diagonal lesion.
+    """
+    try:
+        rect = poly.minimum_rotated_rectangle
+        xs, ys = rect.exterior.coords.xy
+        edges = [((xs[i + 1] - xs[i]) ** 2 + (ys[i + 1] - ys[i]) ** 2) ** 0.5
+                 for i in range(len(xs) - 1)]
+        return max(edges) * mpp
+    except Exception:  # noqa: BLE001  degenerate geometry
+        minx, miny, maxx, maxy = poly.bounds
+        return max(maxx - minx, maxy - miny) * mpp
+
+
+def classify(poly, mpp: float) -> str:
+    """'macro' (>2 mm) | 'micro' (0.2-2 mm) | 'itc' (<0.2 mm)."""
+    ax = major_axis_um(poly, mpp)
+    if ax >= MACRO_MIN_AXIS_UM:
+        return "macro"
+    return "micro" if ax >= MICRO_MIN_AXIS_UM else "itc"
+
+
+def split_evaluable(polys, mpp: float, itc_max_axis_um: float = ITC_MAX_AXIS_UM):
+    """Partition ground-truth polygons into (evaluable, itc_excluded)."""
+    evaluable, itc = [], []
+    for g in polys:
+        (itc if major_axis_um(g, mpp) < itc_max_axis_um else evaluable).append(g)
+    return evaluable, itc
+
 
 @dataclass
 class Detection:
@@ -22,27 +73,51 @@ class Detection:
     lesion_key: str | None = None
 
 
-def match(lesions, gt_polys, slide_id: str, mpp: float, offset_xy=(0.0, 0.0)):
-    """Match predicted lesions to ground-truth polygons by centroid containment.
+def match(lesions, gt_polys, slide_id: str, mpp: float, offset_xy=(0.0, 0.0),
+          itc_max_axis_um: float = ITC_MAX_AXIS_UM):
+    """Match predicted lesions to ground truth, CAMELYON16 convention.
 
-    Returns (detections, n_gt_lesions).  Each GT lesion can be hit at most
-    once; extra predictions on the same lesion are neither hits nor false
-    positives, matching the CAMELYON16 scoring convention.
+    Parameters
+    ----------
+    lesions : predicted connected components (from infer.postproc.apply)
+    gt_polys : ground-truth polygons in the HEATMAP coordinate frame
+    mpp : microns per pixel of that frame
+
+    Returns
+    -------
+    (detections, n_evaluable_gt, n_itc)
+
+    Scoring rules, all three of which matter:
+
+    * A ground-truth lesion counts at most once. Extra predictions on an
+      already-claimed lesion are dropped -- neither hit nor false positive.
+    * Lesions with major axis below ``itc_max_axis_um`` are isolated tumor
+      cells. They are excluded from the denominator, and a prediction landing
+      on one is dropped rather than charged as a false positive.
+    * Everything else unmatched is a false positive.
     """
     from shapely.geometry import Point
+
+    evaluable, itc = split_evaluable(gt_polys, mpp, itc_max_axis_um)
     dets: list[Detection] = []
     claimed: set[int] = set()
     ox, oy = offset_xy
+
     for les in sorted(lesions, key=lambda l: -l.score_max):
         cy, cx = les.centroid_yx
-        pt = Point(cx * mpp / 1.0 + ox, cy * mpp / 1.0 + oy)
-        hit_idx = next((i for i, g in enumerate(gt_polys) if g.contains(pt)), None)
-        if hit_idx is None:
-            dets.append(Detection(slide_id, les.score_max, False))
-        elif hit_idx not in claimed:
-            claimed.add(hit_idx)
-            dets.append(Detection(slide_id, les.score_max, True, f"{slide_id}:{hit_idx}"))
-    return dets, len(gt_polys)
+        pt = Point(cx + ox, cy + oy)          # heatmap pixel frame
+        hit = next((i for i, g in enumerate(evaluable) if g.contains(pt)), None)
+        if hit is not None:
+            if hit not in claimed:
+                claimed.add(hit)
+                dets.append(Detection(slide_id, les.score_max, True,
+                                      f"{slide_id}:{hit}"))
+            continue                           # duplicate hit: ignored
+        if any(g.contains(pt) for g in itc):
+            continue                           # landed on an ITC: not an FP
+        dets.append(Detection(slide_id, les.score_max, False))
+
+    return dets, len(evaluable), len(itc)
 
 
 def curve(detections, n_gt: int, n_slides: int):

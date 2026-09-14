@@ -1,9 +1,12 @@
-.PHONY: help fixtures verify verify-full test lint pipeline clean
+.PHONY: help version fixtures verify verify-full test lint pipeline clean
 PY ?= python
 FIX := tests/fixtures/mini
 
 help:
 	@grep -E '^[a-z-]+:.*?##' $(MAKEFILE_LIST) | sed 's/:.*##/\t/'
+
+version:  ## which build is actually on disk?
+	$(PY) scripts/version.py
 
 fixtures:  ## build synthetic test slides
 	$(PY) scripts/make_fixtures.py --out $(FIX)
@@ -16,6 +19,7 @@ lint:  ## ruff + layering contracts (V0.3, V0.4)
 	-lint-imports --config .importlinter
 
 verify: fixtures  ## gates V0-V6 (fast)
+	@echo "=== version ===";              $(PY) scripts/version.py
 	@echo "=== V0.2 backends ===";        $(PY) -m src.io.slide --selftest
 	@echo "=== V0.6 config hash ===";     $(PY) -m src.utils.config --print-hash configs/base.yaml configs/model_unet_effb0.yaml
 	@echo "=== V1.1 slide metadata ===";  $(PY) -m src.io.slide --info $(FIX)/synth_edge.tif

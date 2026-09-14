@@ -38,11 +38,22 @@ def main() -> int:
     slides = pd.read_parquet(in_dir / "slides.parquet")
 
     failed = in_dir / "failed_slides.csv"
-    if failed.exists() and not a.allow_failed:
-        log.error("%s is present: %d slides failed stage 01. Acknowledge with "
-                  "--allow-failed, or fix them. Refusing to index a silent subset.",
-                  failed, len(pd.read_csv(failed)))
-        return 1
+    if failed.exists():
+        slides_pq = in_dir / "slides.parquet"
+        stale = (slides_pq.exists()
+                 and failed.stat().st_mtime < slides_pq.stat().st_mtime)
+        n_failed = len(pd.read_csv(failed))
+        if stale:
+            log.warning(
+                "%s predates slides.parquet by %.0f s and is therefore left "
+                "over from an earlier run; ignoring it. Delete it to silence "
+                "this.", failed.name,
+                slides_pq.stat().st_mtime - failed.stat().st_mtime)
+        elif not a.allow_failed:
+            log.error("%s lists %d slides that failed stage 01. Acknowledge "
+                      "with --allow-failed, or fix them. Refusing to index a "
+                      "silent subset.", failed, n_failed)
+            return 1
 
     pcfg = PatchConfig(size=cfg.patching.size, stride=cfg.patching.stride,
                        min_tissue=cfg.patching.min_tissue,

@@ -39,7 +39,7 @@ def main() -> int:
 
     slides = pd.read_parquet(Path(cfg.paths.index) / "slides.parquet")
     slides = slides[slides.split == a.split]
-    dets, n_gt, per_slide, labels_y, scores = [], 0, [], [], []
+    dets, n_gt, n_itc, per_slide, labels_y, scores = [], 0, 0, [], [], []
 
     for _, s in slides.iterrows():
         zpath = Path(cfg.paths.heatmaps) / f"{s.slide_id}.zarr"
@@ -55,19 +55,21 @@ def main() -> int:
         geom = ann.load(xml if xml.exists() else None, s.slide_id)
         gt_polys = geom.lesions()
 
-        d, n = F.match(lesions, gt_polys, s.slide_id, mpp)
-        dets += d; n_gt += n
+        d, n, n_i = F.match(lesions, gt_polys, s.slide_id, mpp)
+        dets += d; n_gt += n; n_itc += n_i
         sc = slide_score(heat)
         labels_y.append(int(bool(gt_polys))); scores.append(sc)
         per_slide.append(dict(slide_id=s.slide_id, n_pred=len(lesions), n_gt=n,
                               score=sc, fp=sum(1 for x in d if not x.hit)))
-        log.info("%-18s pred=%d gt=%d score=%.3f", s.slide_id, len(lesions), n, sc)
+        log.info("%-18s pred=%d gt=%d (+%d ITC excluded) score=%.3f",
+                 s.slide_id, len(lesions), n, n_i, sc)
 
     fpps, sens = F.curve(dets, n_gt, max(len(per_slide), 1))
     at = F.sensitivity_at(fpps, sens, tuple(cfg.eval.froc_points))
     fps = [r["fp"] for r in per_slide] or [0]
     metrics = {
-        "n_slides": len(per_slide), "n_gt_lesions": n_gt, "threshold": tau,
+        "n_slides": len(per_slide), "n_gt_lesions": n_gt,
+        "n_itc_excluded": n_itc, "threshold": tau,
         "froc_sensitivity": at, "froc_avg": F.average_sensitivity(at),
         "slide_auc": roc_auc(labels_y, scores),
         "fp_per_normal_slide": float(np.mean(
