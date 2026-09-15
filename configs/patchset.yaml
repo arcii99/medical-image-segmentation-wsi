@@ -6,6 +6,10 @@ data:
   source: patchset
   patchset_root: patchset       # directory holding shards/, files/, manifest.parquet
 train:
-  # Hard-negative mining needs the full normal pool, which an export does not
-  # carry. Disabled rather than silently operating on a subset.
+  # Hard-negative mining needs the full normal pool. A BALANCED export does
+  # not carry it, so mining is disabled rather than silently operating on a
+  # pre-sampled subset.
+  #
+  # If the export was made with --all, the full pool IS present -- re-enable
+  # with:  --set train.hard_negative_start_epoch=8
   hard_negative_start_epoch: 9999

@@ -52,7 +52,108 @@ result rather than the final one.
 
 ---
 
+## "I have 4.5 TB of Drive — can I just upload the slides?"
+
+Storage is not the constraint. Two other things are.
+
+**Upload time.** 230 GB at 50 Mbps up is about 10 hours; at 20 Mbps, over a
+day.
+
+**Random access over a network mount.** `read_region` pulls a handful of
+256×256 tiles from scattered byte offsets inside a 1.8 GB file. Drive is a
+FUSE mount designed for streaming whole files, not for seeking inside them.
+Local NVMe does this in ~12 ms; expect an order of magnitude or two worse over
+Drive, against a GPU that wants ~36 patches/s. Sustained heavy Drive IO can
+also trip quota throttling mid-session.
+
+Do not take that on faith — measure it:
+
+```bash
+python scripts/bench_read.py --slide /content/drive/MyDrive/wsi/tumor_016.tif
+```
+
+It prints latency percentiles and an explicit verdict: GPU-bound, marginal, or
+IO-bound. If it says comfortably GPU-bound, ignore everything above and train
+off the mount.
+
+**What the space is genuinely worth** is not the slides. It is exporting the
+**full** patch index instead of a balanced subset — see the next section.
+
+## Choosing an export size
+
+Drive capacity is almost never the binding constraint. **Colab's local disk
+is** — roughly 107 GB on the free tier, shared with the OS and with the
+shards you extract from. Plan around ~40 GB of extracted patches, not around
+Drive.
+
+| Export | Patches | Size | When |
+|---|---|---|---|
+| `--normal-per-tumor 3` | ~43k | ~3.3 GB | Minimum viable. Fits anywhere. |
+| `--normal-per-tumor 6` | ~75k | ~5.8 GB | More negative variety; sampler repeats less. |
+| `--normal-per-tumor 6 --jitter-copies 3` | ~220k | ~17 GB | **Recommended if you have the space.** |
+| `--all --jitter-copies 3` | ~760k | ~60 GB | Only with Colab Pro; extraction is the limit. |
+
+`--jitter-copies K` bakes K distinct random offsets per tumor anchor at export
+time. This directly recovers most of what an export gives up: instead of one
+frozen crop per patch, the model sees K of them. Not unlimited like the
+slide-backed path, but a large improvement for a linear cost in disk.
+
+### Why not just put the slides on Drive?
+
+With terabytes of Drive space this is the obvious question, and the answer is
+about **access pattern**, not capacity.
+
+Colab mounts Drive over FUSE. The pipeline reads a 512x512 window from a
+multi-gigabyte tiled TIFF, which means seeking to a handful of scattered tile
+offsets and decoding them — thousands of times per minute:
+
+```
+local NVMe    ~12 ms/patch   ->  ~660 patches/s with 8 workers
+Drive FUSE    0.5-5 s/patch  ->  roughly 1-5 patches/s
+GPU needs                        ~36 patches/s to stay busy at batch 16
+```
+
+The GPU would idle 90-99% of the time, and sustained random access through
+the Drive mount triggers rate limiting (HTTP 403). Copying the slides to local
+disk first does not help either: 230 GB does not fit in ~107 GB, and a partial
+copy would have to be redone every session.
+
+The patch export exists precisely because small sequential files are what a
+hosted notebook is good at.
+
+Drive space is still worth using — for an off-machine backup of the raw
+archive, for checkpoints, and for heatmaps and reports coming back.
+
 ## Step 1 — Export locally
+
+### With ample Drive space, export everything
+
+```bash
+python scripts/07_export_patchset.py --plan --all --jitter-copies 2
+```
+
+~254,000 patches plus jittered tumor copies, roughly **24 GB**. This is the
+better export, and not only because it is bigger:
+
+| | balanced subset (~4 GB) | full index (~24 GB) |
+|---|---|---|
+| Sampler | draws from an already-sampled pool | behaves exactly as against the slide archive |
+| Hard negative mining | disabled — nothing to mine | **works**, over all 237,000 negatives |
+| Per-epoch jitter | lost | partly recovered via `--jitter-copies` |
+
+`--jitter-copies N` writes N extra randomly-offset crops of each **tumor**
+patch. Jitter matters most where data is scarcest, and tumor patches are ~6%
+of the index, so copying those is cheap; copying negatives would multiply the
+export for almost no benefit.
+
+With the full export, re-enable mining by dropping `configs/patchset.yaml`
+from the config list, or with
+`--set train.hard_negative_start_epoch=8`.
+
+Colab's local disk is ~107 GB, so 24 GB extracts with plenty of room for
+checkpoints.
+
+### Or the compact version
 
 ```bash
 python scripts/07_export_patchset.py --plan --normal-per-tumor 3
@@ -78,7 +179,8 @@ Tune before exporting, not after:
 Then:
 
 ```bash
-python scripts/07_export_patchset.py --export --out artifacts/patchset --workers 8
+python scripts/07_export_patchset.py --export --out artifacts/patchset \
+    --normal-per-tumor 6 --jitter-copies 3 --workers 8
 ```
 
 Around 20–40 minutes. Output:

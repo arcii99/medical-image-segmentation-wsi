@@ -51,6 +51,55 @@ MB = 1024 ** 2
 
 
 # --------------------------------------------------------------------------
+def select_all(patches: pd.DataFrame) -> pd.DataFrame:
+    """Export the entire index -- no sampling at all.
+
+    Worth the extra disk when there is disk to spare. A balanced subset forces
+    the sampler to draw from a pool that was already sampled, and leaves hard
+    negative mining with nothing to mine. The full index restores both: the
+    sampler behaves exactly as it does against the slide archive, and mining
+    sees every normal patch.
+
+    The only thing still given up is per-epoch coordinate jitter, and
+    --jitter-copies recovers part of that.
+    """
+    sel = patches[patches.split.isin(("train", "val"))].copy()
+    sel["key"] = [f"{r.slide_id}_{r.x0}_{r.y0}" for r in sel.itertuples()]
+    sel["jitter"] = 0
+    return sel.reset_index(drop=True)
+
+
+def add_jitter_copies(sel: pd.DataFrame, n_copies: int, thr: float,
+                      jitter_px: int, seed: int) -> pd.DataFrame:
+    """Extra randomly-offset crops of the TUMOR patches only.
+
+    Jitter matters most where data is scarcest. Tumor patches are ~6% of the
+    index, so copying those is cheap, while copying negatives would multiply
+    the export for little benefit -- there are already 237,000 of them.
+    """
+    if n_copies <= 0:
+        sel["jx"] = 0; sel["jy"] = 0
+        return sel
+    rng = np.random.default_rng(seed)
+    # Give the originals explicit zero offsets. Concatenating frames where
+    # only some carry jx/jy fills the rest with NaN, which then fails on
+    # int() at read time.
+    sel = sel.copy(); sel["jx"] = 0; sel["jy"] = 0
+    tumor = sel[(sel.tumor_frac > thr) & (sel.jitter == 0)]
+    extra = []
+    for k in range(1, n_copies + 1):
+        c = tumor.copy()
+        c["jx"] = rng.integers(-jitter_px, jitter_px + 1, len(c))
+        c["jy"] = rng.integers(-jitter_px, jitter_px + 1, len(c))
+        c["jitter"] = k
+        c["key"] = [f"{r.slide_id}_{r.x0}_{r.y0}_j{k}" for r in c.itertuples()]
+        extra.append(c)
+    out = pd.concat([sel] + extra, ignore_index=True)
+    out["jx"] = out["jx"].fillna(0).astype(int)
+    out["jy"] = out["jy"].fillna(0).astype(int)
+    return out
+
+
 def select(patches: pd.DataFrame, slides: pd.DataFrame, cfg,
            normal_per_tumor: float, max_per_split: dict[str, int],
            seed: int) -> pd.DataFrame:
@@ -91,6 +140,7 @@ def select(patches: pd.DataFrame, slides: pd.DataFrame, cfg,
         out.append(sel.assign(split=split))
     sel = pd.concat(out).reset_index(drop=True)
     sel["key"] = [f"{r.slide_id}_{r.x0}_{r.y0}" for r in sel.itertuples()]
+    sel["jitter"] = 0
     return sel
 
 
@@ -107,7 +157,10 @@ def _export_slide(args) -> tuple[str, list[dict], bytes]:
         geom = ann.load(xml, slide_id, r.level_dims[0]) if xml else \
             ann.load(None, slide_id)
         ds = r.level_downsamples[level]
-        for x0, y0, tumor_frac, key in rows:
+        for x0, y0, tumor_frac, key, jx, jy in rows:
+            # Jittered copies are read at an offset, so they are genuinely
+            # different crops rather than duplicates of the same pixels.
+            x0 = max(0, x0 + int(jx * ds)); y0 = max(0, y0 + int(jy * ds))
             img = r.read_region(x0, y0, level, size, size)
             mask = geom.rasterize(x0, y0, size, size, ds)
             if needs_resample(residual):
@@ -139,6 +192,13 @@ def main() -> int:
     ap.add_argument("--plan", action="store_true")
     ap.add_argument("--export", action="store_true")
     ap.add_argument("--out", default="artifacts/patchset")
+    ap.add_argument("--all", action="store_true",
+                    help="export the ENTIRE index, no sampling (~20 GB for "
+                         "254k patches). Restores the sampler and hard "
+                         "negative mining; needs disk on both ends.")
+    ap.add_argument("--jitter-copies", type=int, default=0,
+                    help="extra randomly-offset crops per TUMOR patch, to "
+                         "recover some of the per-epoch jitter an export loses")
     ap.add_argument("--normal-per-tumor", type=float, default=3.0)
     ap.add_argument("--max-train", type=int, default=0, help="0 = no cap")
     ap.add_argument("--max-val", type=int, default=8000)
@@ -152,10 +212,24 @@ def main() -> int:
     patches = idx.load(in_dir / "patches.parquet")
     slides = pd.read_parquet(in_dir / "slides.parquet")
 
-    sel = select(patches, slides, cfg, a.normal_per_tumor,
-                 {"train": a.max_train, "val": a.max_val}, int(cfg.seed))
-
     thr = float(cfg.patching.tumor_threshold)
+    if a.all:
+        sel = select_all(patches)
+        print("\nMODE: full index -- no sampling. The sampler and hard "
+              "negative mining will behave exactly as they do against the "
+              "slide archive.")
+    else:
+        sel = select(patches, slides, cfg, a.normal_per_tumor,
+                     {"train": a.max_train, "val": a.max_val}, int(cfg.seed))
+    if not a.jitter_copies:
+        sel["jx"] = 0; sel["jy"] = 0
+    if a.jitter_copies:
+        before = len(sel)
+        sel = add_jitter_copies(sel, a.jitter_copies, thr,
+                                int(cfg.patching.jitter), int(cfg.seed))
+        print(f"  + {len(sel)-before:,} jittered tumor copies "
+              f"({a.jitter_copies} per tumor patch, +/-"
+              f"{int(cfg.patching.jitter)} px)")
     print(f"\nSELECTED {len(sel):,} patches")
     for split in ("train", "val"):
         s = sel[sel.split == split]
@@ -166,9 +240,12 @@ def main() -> int:
     print(f"\n  estimated size ~{est/MB/1024:.2f} GB at JPEG q{a.quality}")
     print(f"  shards of {a.shard_size:,} -> "
           f"{int(np.ceil(len(sel)/a.shard_size))} tar files")
-    if est / MB / 1024 > 12:
-        print("\n  WARNING: over ~12 GB is awkward for free Colab/Kaggle.")
-        print("  Reduce with --normal-per-tumor 2 or --max-train 60000.")
+    if est / MB / 1024 > 60:
+        print("\n  WARNING: this will not fit Colab's ~107 GB local disk once")
+        print("  extracted alongside checkpoints. Reduce the export.")
+    elif est / MB / 1024 > 12:
+        print("\n  NOTE: over ~12 GB. Fine if Drive has room and the upload")
+        print("  is a one-off; tight on free Drive (15 GB).")
 
     if not a.export:
         print("\n(plan only -- re-run with --export)")
@@ -181,7 +258,8 @@ def main() -> int:
         m = meta.loc[sid]
         xml = Path(m.path).with_suffix(".xml")
         jobs.append((sid, m.path, xml if xml.exists() else None,
-                     [(int(r.x0), int(r.y0), float(r.tumor_frac), r.key)
+                     [(int(r.x0), int(r.y0), float(r.tumor_frac), r.key,
+                       int(r.jx), int(r.jy))
                       for r in g.itertuples()],
                      int(g["size"].iloc[0]), int(m.level_w),
                      float(m.residual_scale), a.quality))

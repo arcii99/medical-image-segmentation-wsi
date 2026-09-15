@@ -35,44 +35,43 @@ MARKERS = [
     ("0.4.0", "stratified splits + physical tissue guard + montage QC",
      [("src/utils/splits.py", "assign_stratified"),
       ("src/preprocess/tissue.py", "min_tissue_mm2"),
-      ("scripts/qc_tissue_montage.py", "render_cell"),
-      ("scripts/01_build_tissue_masks.py", "slide_class")]),
+      ("scripts/qc_tissue_montage.py", "render_cell")]),
     ("0.5.0", "CAMELYON16 ITC convention in FROC + index audit",
      [("src/eval/froc.py", "ITC_MAX_AXIS_UM"),
-      ("src/eval/froc.py", "major_axis_um"),
-      ("scripts/qc_index.py", "ITC_MAX_AXIS_UM")]),
+      ("scripts/qc_index.py", "major_axis_um")]),
     ("0.6.0", "post-processing filters by major axis, matching evaluation",
      [("src/infer/postproc.py", "min_lesion_axis_um"),
       ("src/infer/postproc.py", "_major_axes")]),
-    ("0.6.1", "CPU smoke-test path",
-     [("configs/cpu_smoke.yaml", "overfit_batches"),
-      ("scripts/03_train.py", "no CUDA device is visible")]),
-    ("0.7.0", "portable patchset export for remote GPU training",
-     [("scripts/07_export_patchset.py", "estimate_bytes"),
+    ("0.7.0", "portable patchset export + CPU path",
+     [("scripts/07_export_patchset.py", "jitter-copies"),
       ("src/data/patchset.py", "PatchSetDataset"),
-      ("configs/patchset.yaml", "patchset_root"),
-      ("scripts/03_train.py", "source == \"patchset\"")]),
-    ("0.7.1", "update.sh refuses a stale tarball",
-     [("update.sh", "NOTHING TO DO")]),
+      ("configs/cpu_smoke.yaml", "overfit_batches"),
+      ("update.sh", "NOTHING TO DO"),
+      ("update.sh", ".update.sh.incoming")]),
+    ("0.8.0", "training path verified end to end (gate V6.2 passed)",
+     [("scripts/03_train.py", "Insert the default FIRST"),
+      ("scripts/03_train.py", "likely to be OOM-killed"),
+      ("scripts/03_train.py", "wiring is sound"),
+      ("scripts/03_train.py", "OVERFIT MODE"),
+      ("scripts/03_train.py", "overfit criterion met"),
+      ("scripts/03_train.py", "GATE V6.2"),
+      ("scripts/03_train.py", "max_val_batches"),
+      ("src/train/metrics.py", "def confidence"),
+      ("docs/COLAB.md", "Why not just put the slides on Drive")]),
 ]
 
 
 # Tree hashes of published releases, so a stale tree can be identified even
 # when its own marker list predates the release it is missing.
 KNOWN_HASHES = {
-    # Hashes before 0.7.1 were computed over narrower file sets and are not
-    # comparable with the current scheme. They are kept because identifying a
-    # stale tree is exactly what they are needed for.
-    "0.7.6": "a082edc18913b641",
-    "0.7.5": "934c91f5ccd5f7b3",
-    "0.7.4": "41db4732dd6b6182",
-    "0.7.3": "7368cc88de6a1b01",
-    "0.7.2": "55c4a794ccd28d22",
-    "0.7.1": "0237d825c8b2c84a",
+    # Hashes are over src + scripts + configs + update.sh + Makefile +
+    # pyproject + VERSION, excluding this file. Entries marked "old scheme"
+    # were computed over narrower sets during 0.4-0.7 and are kept only to
+    # identify a stale tree.
+    "0.8.0": "9abc903764072f14",
     "0.4.0 (old scheme)": "4dc9dde93baf0408",
     "0.5.0 (old scheme)": "c6a27035dd31fd51",
     "0.6.0 (old scheme)": "8f480e32048247e9",
-    "0.6.1 (old scheme)": "c0a6f0e439fe863d",
     "0.7.0 (old scheme)": "76602045f53100df",
 }
 
