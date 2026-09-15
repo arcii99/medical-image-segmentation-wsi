@@ -1219,3 +1219,65 @@ the fourth units defect in the project (ADR-012, BUG-019, BUG-023, and now
 this one) — but the first where both units were individually reasonable and
 only the *pairing* was wrong. Gate V0.5 greps for hard-coded pixel constants;
 it cannot catch this. A checklist item for reviewing threshold pairs would.
+
+---
+
+## BUG-027 — Appended model config silently overrode the caller's settings
+
+**Status:** Fixed · **Severity:** S2 · **Provenance:** `[OBSERVED]`
+**Surfaced in:** first CPU run, as `Killed` with no traceback
+
+### Symptom
+```
+$ python scripts/03_train.py --config base data_camelyon16 \
+      model_unet_effb0 cpu_smoke --dry-run
+dry run: device=cpu batch=16 source=slides
+Killed
+```
+`cpu_smoke.yaml` sets `batch_size: 4`. The run used 16 and was killed by the
+kernel's OOM reaper, which produces no Python traceback at all -- just the
+word `Killed`.
+
+### Root cause
+Stage 03 did this:
+```python
+cfg = load(a.config + ["configs/model_unet_effb0.yaml"], a.set)
+```
+Config files merge left to right, so **anything appended overrides everything
+the caller passed**. The caller's trailing `cpu_smoke.yaml` was clobbered by a
+file the script added after it.
+
+The convenience was real -- callers did not have to name the model config --
+but it silently inverted the precedence the whole config system is built on.
+
+### Fix
+Insert the default **first**, and only when the caller did not name a model
+config themselves:
+```python
+paths = list(a.config)
+if not any("model" in Path(p).stem for p in paths):
+    paths.insert(0, "configs/model_unet_effb0.yaml")
+```
+Caller configs now always win, and the common case still needs no model file.
+
+Stage 03 also now logs the resolved config list and the effective
+device / batch / workers / epochs at startup. A config that silently did not
+apply is indistinguishable from one that did, right up until the run dies.
+
+### Also fixed in the same pass
+* `float(loss)` on a tensor with `requires_grad` warned on every log line;
+  now `float(loss.detach())`.
+* A CPU run now estimates its activation budget against physical RAM and warns
+  with a concrete smaller batch size, because `Killed` carries no diagnostic
+  information whatsoever.
+* `cpu_smoke.yaml` drops workers from 4 to 2.
+
+### Regression guard
+`tests/unit/test_patient_rules.py` -- four cases covering trailing-config
+precedence, default insertion, the patchset path, and `--set` overriding
+every file.
+
+### Lesson
+A default that is applied *after* user input is not a default; it is an
+override wearing a default's name. Defaults belong at the start of a merge
+chain, never the end.

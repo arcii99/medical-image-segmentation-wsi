@@ -63,6 +63,7 @@ KNOWN_HASHES = {
     # Hashes before 0.7.1 were computed over narrower file sets and are not
     # comparable with the current scheme. They are kept because identifying a
     # stale tree is exactly what they are needed for.
+    "0.7.4": "41db4732dd6b6182",
     "0.7.3": "7368cc88de6a1b01",
     "0.7.2": "55c4a794ccd28d22",
     "0.7.1": "0237d825c8b2c84a",

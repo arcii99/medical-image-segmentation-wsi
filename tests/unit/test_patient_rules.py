@@ -163,3 +163,50 @@ def test_duplicate_hits_on_one_lesion_count_once():
     assert n_ev == 1
     assert sum(d.hit for d in dets) == 1
     assert sum(not d.hit for d in dets) == 0, "extra hits are dropped, not FPs"
+
+
+# --- config merge order (BUG-027) ---
+
+from pathlib import Path as _Path  # noqa: E402
+
+from src.utils.config import load as _load  # noqa: E402
+
+
+def _resolve(user):
+    """Mirrors the default-insertion logic in scripts/03_train.py."""
+    paths = list(user)
+    if not any("model" in _Path(p).stem for p in paths):
+        paths.insert(0, "configs/model_unet_effb0.yaml")
+    return _load(paths)
+
+
+BASE = ["configs/base.yaml", "configs/data_camelyon16.yaml"]
+
+
+def test_trailing_config_wins():
+    """cpu_smoke last must actually apply -- appending the model config after
+    it silently restored batch 16 and the run was OOM-killed."""
+    cfg = _resolve(BASE + ["configs/model_unet_effb0.yaml",
+                           "configs/cpu_smoke.yaml"])
+    assert cfg.train.batch_size == 4
+    assert cfg.hw.device == "cpu"
+    assert cfg.data.augment is False
+
+
+def test_model_config_inserted_when_absent():
+    cfg = _resolve(BASE)
+    assert cfg.model.name == "unet_effb0"
+    assert cfg.train.batch_size == 16       # the documented GPU default
+
+
+def test_patchset_config_survives():
+    cfg = _resolve(BASE + ["configs/model_unet_effb0.yaml",
+                           "configs/patchset.yaml"])
+    assert cfg.data.source == "patchset"
+    assert cfg.model.name == "unet_effb0"
+
+
+def test_cli_set_overrides_every_file():
+    cfg = _load(BASE + ["configs/model_unet_effb0.yaml",
+                        "configs/cpu_smoke.yaml"], ["train.batch_size=2"])
+    assert cfg.train.batch_size == 2

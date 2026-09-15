@@ -14,12 +14,18 @@
 #               configs/model_unet_effb0.yaml configs/cpu_smoke.yaml
 hw:
   device: cpu
-  dataloader_workers: 4
+  # Each worker holds decoded patches and an open slide handle. On a machine
+  # already tight for the model's own activations, workers are the cheapest
+  # thing to cut.
+  dataloader_workers: 2
   amp_dtype: float32          # bf16 autocast is a GPU path; disabled on CPU
 data:
   augment: false              # memorisation test: remove the moving target
 train:
-  batch_size: 4               # 16 at 512px is slow on CPU; 4 keeps steps short
+  # ~0.7 GB of activations per sample in fp32. 4 needs roughly 3 GB; 16 needs
+  # closer to 12 and will be OOM-killed on most desktops -- as "Killed", with
+  # no traceback.
+  batch_size: 4
   max_steps: 200
   overfit_batches: 1
   freeze_encoder_epochs: 0    # nothing frozen -- we want maximum capacity

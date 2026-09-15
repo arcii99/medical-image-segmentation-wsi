@@ -42,7 +42,20 @@ def main() -> int:
     p.add_argument("--dry-run", action="store_true",
                    help="build everything, run ONE forward+backward, exit")
     a = p.parse_args()
-    cfg = load(a.config + ["configs/model_unet_effb0.yaml"], a.set)
+    # Do NOT append the model config unconditionally.
+    #
+    # Config files are merged left to right, so anything appended here
+    # overrides everything the caller passed. Appending the model config meant
+    # a trailing `configs/cpu_smoke.yaml` was silently clobbered: the run used
+    # batch 16 instead of 4 and was OOM-killed, with nothing in the log to
+    # suggest the requested config had been ignored.
+    #
+    # Insert the default FIRST instead, so caller configs always win, and skip
+    # it entirely when the caller named a model config themselves.
+    paths = list(a.config)
+    if not any("model" in Path(p_).stem for p_ in paths):
+        paths.insert(0, "configs/model_unet_effb0.yaml")
+    cfg = load(paths, a.set)
     seed_everything(int(cfg.seed))
 
     import torch
@@ -64,6 +77,14 @@ def main() -> int:
     mw = MetricWriter(run_dir)
     (run_dir / "config.json").write_text(json.dumps(cfg.to_dict(), indent=2, default=str))
     log.info("run %s  (dirty=%s)", run_id, dirty)
+    # Echo what was actually resolved. A config that silently did not apply is
+    # indistinguishable from one that did, until the run dies.
+    log.info("configs   %s", " ".join(paths))
+    log.info("effective device=%s batch=%s workers=%s epochs=%s "
+             "max_steps=%s augment=%s model=%s",
+             cfg.hw.device, cfg.train.batch_size, cfg.hw.dataloader_workers,
+             cfg.train.max_epochs, cfg.train.get("max_steps", 0) or "-",
+             cfg.data.get("augment", True), cfg.model.name)
 
     index_path = Path(cfg.paths.index) / "patches.parquet"
     have_index = index_path.exists()
@@ -113,6 +134,25 @@ def main() -> int:
                     want)
     dev = torch.device(want if (want == "cpu" or torch.cuda.is_available())
                        else "cpu")
+
+    if dev.type == "cpu":
+        # Rough activation budget for UNet-EffNetB0 in fp32, measured against
+        # the documented 5.8 GB at batch 16 in bf16 and doubled for fp32.
+        est_gb = cfg.train.batch_size * 0.72
+        try:
+            import os as _os
+            total_gb = (_os.sysconf("SC_PAGE_SIZE")
+                        * _os.sysconf("SC_PHYS_PAGES")) / 1024 ** 3
+        except (ValueError, AttributeError):
+            total_gb = float("nan")
+        log.info("CPU run: batch %d needs roughly %.1f GB; machine has "
+                 "%.1f GB", cfg.train.batch_size, est_gb, total_gb)
+        if total_gb == total_gb and est_gb > 0.55 * total_gb:
+            log.warning(
+                "this is likely to be OOM-killed (the kernel kills the "
+                "process with no Python traceback -- you just see 'Killed'). "
+                "Lower it: --set train.batch_size=%d",
+                max(1, int(0.35 * total_gb / 0.72)))
 
     # pin_memory only helps when staging tensors for a GPU copy; on CPU it
     # just warns.
@@ -187,9 +227,10 @@ def main() -> int:
             torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.train.grad_clip)
             opt.step(); opt.zero_grad(set_to_none=True)
             if step % cfg.log_every == 0:
-                mw.log(epoch=epoch, step=step, loss=float(loss),
+                mw.log(epoch=epoch, step=step, loss=float(loss.detach()),
                        lr=opt.param_groups[-1]["lr"])
-                log.info("e%02d s%05d loss=%.4f", epoch, step, float(loss))
+                log.info("e%02d s%05d loss=%.4f", epoch, step,
+                         float(loss.detach()))
             if max_steps and step + 1 >= max_steps:
                 break
         sched.step()
