@@ -390,6 +390,19 @@ params total 6,254,881   trainable 6,254,881   encoder 4,007,548
 peak activation mem @ bs16 bf16: 3.71 GB
 ```
 
+### V6.1 Dry run — one forward+backward, seconds
+```bash
+python scripts/03_train.py \
+  --config configs/base.yaml configs/data_camelyon16.yaml \
+           configs/model_unet_effb0.yaml configs/cpu_smoke.yaml --dry-run
+```
+**Expect:** `DRY RUN OK -- wiring is sound`, with logits and mask shapes equal,
+a finite loss, and a non-zero gradient norm.
+
+Runs in seconds and catches construction-order errors, shape mismatches,
+detached graphs and non-binary masks — the failures that otherwise appear
+twenty minutes into V6.2 or, worse, after a remote session has started.
+
 ### V6.2 Overfit-a-single-batch sanity
 ```bash
 python scripts/03_train.py --set train.overfit_batches=1 train.max_steps=300 \

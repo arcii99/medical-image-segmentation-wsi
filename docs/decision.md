@@ -575,6 +575,16 @@ meaning whenever ADR-002 or ADR-009 changes.
 - Post-processing parameters are part of the reported result and are written
   into `artifacts/reports/{run_id}/config_snapshot.yaml`.
 
+### Amendment (2026-09-12, after BUG-026)
+The speckle filter is expressed in **major axis** (default 100 um), not area.
+
+Evaluation scores ground-truth lesions by major axis (ADR-013 as amended), so
+an area-based detection filter creates a band where the two disagree: a
+400 x 40 um deposit is evaluable at 400 um axis but only 0.016 mm^2, and was
+being deleted before it could be scored. Both thresholds now measure the same
+quantity, and the detection threshold is deliberately set well below the
+evaluability boundary so nothing scorable can be filtered out.
+
 ### Revisit trigger
 Any clinical requirement to report isolated tumor cells.
 

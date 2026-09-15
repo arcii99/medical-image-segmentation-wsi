@@ -7,7 +7,11 @@ infer:
   sigma_divisor: 8.0
   chunk: 1024
 postproc:
-  min_lesion_mm2: 0.02
+  # Filter by major axis, matching how evaluation measures lesions.
+  # 100 um is well below the 275 um ITC/evaluable boundary, so nothing
+  # scorable is ever removed.
+  min_lesion_axis_um: 100.0
+  min_lesion_mm2: 0.0        # optional secondary area filter; 0 disables
   opening_um: 10.0
   fill_holes: true
 eval:

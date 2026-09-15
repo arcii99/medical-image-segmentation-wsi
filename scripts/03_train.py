@@ -39,6 +39,8 @@ def main() -> int:
     p = base_parser("03_train")
     p.add_argument("--out", default=None)
     p.add_argument("--resume", default=None)
+    p.add_argument("--dry-run", action="store_true",
+                   help="build everything, run ONE forward+backward, exit")
     a = p.parse_args()
     cfg = load(a.config + ["configs/model_unet_effb0.yaml"], a.set)
     seed_everything(int(cfg.seed))
@@ -64,9 +66,16 @@ def main() -> int:
     log.info("run %s  (dirty=%s)", run_id, dirty)
 
     index_path = Path(cfg.paths.index) / "patches.parquet"
-    df = idx.load(index_path)
-    idx.assert_no_split_leakage(df)
-    slides = pd.read_parquet(Path(cfg.paths.index) / "slides.parquet")
+    have_index = index_path.exists()
+    if have_index:
+        df = idx.load(index_path)
+        idx.assert_no_split_leakage(df)
+        slides = pd.read_parquet(Path(cfg.paths.index) / "slides.parquet")
+    else:
+        # A patchset export carries its own manifest; the full index and the
+        # slide archive stay on the machine that built it.
+        df = pd.DataFrame(columns=["slide_id", "split", "tumor_frac"])
+        slides = pd.DataFrame(columns=["slide_id", "path", "residual_scale"])
     paths = dict(zip(slides.slide_id, map(Path, slides.path)))
     anns = {s: Path(p).with_suffix(".xml") for s, p in paths.items()
             if Path(p).with_suffix(".xml").exists()}
@@ -75,21 +84,46 @@ def main() -> int:
     tr, va = df[df.split == "train"], df[df.split == "val"]
     assert not (set(tr.slide_id) & set(va.slide_id)), "slide-level split leakage"
 
-    train_ds = PatchDataset(tr, paths, anns, train=True,
-                            jitter=cfg.patching.jitter, seed=cfg.seed,
-                            residual_scale=resid)
-    val_ds = PatchDataset(va, paths, anns, train=False, residual_scale=resid)
+
+    source = str(cfg.data.get("source", "slides"))
+    if source == "patchset":
+        # Portable exported patches -- no slide archive required. See
+        # src/data/patchset.py for what this trades away.
+        from src.data.patchset import PatchSetDataset
+        root = cfg.data.patchset_root
+        train_ds = PatchSetDataset(root, "train", train=True, seed=cfg.seed)
+        val_ds = PatchSetDataset(root, "val", train=False, seed=cfg.seed)
+        tr = pd.DataFrame({"tumor_frac": train_ds.index.tumor_frac,
+                           "slide_id": train_ds.index.slide_id})
+        log.info("training from exported patchset at %s", root)
+    else:
+        train_ds = PatchDataset(tr, paths, anns, train=True,
+                                jitter=cfg.patching.jitter, seed=cfg.seed,
+                                residual_scale=resid)
+        val_ds = PatchDataset(va, paths, anns, train=False,
+                              residual_scale=resid)
     sampler = BalancedSampler(tr, neg_per_pos=cfg.train.neg_per_pos,
                               tumor_threshold=cfg.patching.tumor_threshold,
                               seed=cfg.seed)
+    want = str(cfg.hw.device)
+    if want.startswith("cuda") and not torch.cuda.is_available():
+        log.warning("config asked for %s but no CUDA device is visible; "
+                    "falling back to CPU. Full training on CPU is not "
+                    "practical -- this path is for the wiring smoke test.",
+                    want)
+    dev = torch.device(want if (want == "cpu" or torch.cuda.is_available())
+                       else "cpu")
+
+    # pin_memory only helps when staging tensors for a GPU copy; on CPU it
+    # just warns.
     dl = dict(num_workers=cfg.hw.dataloader_workers, worker_init_fn=worker_init,
-              persistent_workers=cfg.hw.dataloader_workers > 0, pin_memory=True,
+              persistent_workers=cfg.hw.dataloader_workers > 0,
+              pin_memory=(dev.type == "cuda"),
               prefetch_factor=4 if cfg.hw.dataloader_workers else None)
     train_dl = DataLoader(train_ds, batch_size=cfg.train.batch_size,
                           sampler=sampler, drop_last=True, **dl)
     val_dl = DataLoader(val_ds, batch_size=cfg.train.batch_size, shuffle=False, **dl)
 
-    dev = torch.device(cfg.hw.device if torch.cuda.is_available() else "cpu")
     model = build(cfg.model).to(dev)
     crit = build_loss(cfg.loss).to(dev)
     opt = torch.optim.AdamW(param_groups(model, cfg.train.lr_encoder,
@@ -97,6 +131,40 @@ def main() -> int:
     sched = cosine_with_warmup(opt, cfg.train.warmup_epochs, cfg.train.max_epochs)
     amp = dict(device_type=dev.type, dtype=getattr(torch, cfg.hw.amp_dtype),
                enabled=dev.type == "cuda")
+
+    if a.dry_run:
+        # Seconds, not minutes. Exercises every construction step and one full
+        # optimisation step, which is where ordering and shape bugs live --
+        # the kind that otherwise surface twenty minutes into a run.
+        log.info("dry run: device=%s batch=%d source=%s",
+                 dev, cfg.train.batch_size, source)
+        batch = next(iter(train_dl))
+        x = batch["image"].to(dev); y = batch["mask"].to(dev)
+        log.info("batch image %s %s  mask %s  mask values %s",
+                 list(x.shape), x.dtype, list(y.shape),
+                 sorted(set(y.unique().tolist())))
+        with torch.autocast(**amp):
+            logits = model(x)
+            loss = crit(logits, y)
+        loss.backward()
+        gnorm = torch.nn.utils.clip_grad_norm_(model.parameters(),
+                                               cfg.train.grad_clip)
+        opt.step(); opt.zero_grad(set_to_none=True)
+        log.info("logits %s   loss %.4f   grad-norm %.4f",
+                 list(logits.shape), float(loss), float(gnorm))
+        problems = []
+        if list(logits.shape) != list(y.shape):
+            problems.append(f"logits {list(logits.shape)} != mask {list(y.shape)}")
+        if not torch.isfinite(loss):
+            problems.append("loss is not finite")
+        if float(gnorm) == 0.0:
+            problems.append("gradient norm is exactly 0 -- graph detached?")
+        if set(y.unique().tolist()) - {0.0, 1.0}:
+            problems.append("mask is not binary")
+        for m in problems:
+            log.error("DRY RUN PROBLEM: %s", m)
+        log.info("DRY RUN %s", "FAILED" if problems else "OK -- wiring is sound")
+        return 1 if problems else 0
 
     start_epoch, best, patience = 0, -1.0, 0
     if a.resume:
@@ -139,7 +207,9 @@ def main() -> int:
                        optimizer=opt.state_dict(), epoch=epoch,
                        threshold=m["threshold"], best_dice=max(best, m["dice"]),
                        resolved_config=cfg.to_dict(), git_sha=sha, dirty=dirty,
-                       pip_freeze=_pip_freeze(), index_hash=idx.index_hash(index_path),
+                       pip_freeze=_pip_freeze(),
+                       index_hash=(idx.index_hash(index_path) if have_index
+                                   else "patchset"),
                        seed=int(cfg.seed), run_id=run_id)
         torch.save(payload, run_dir / "last.pt")
         if m["dice"] > best:

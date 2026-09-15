@@ -1161,3 +1161,61 @@ denominator was not. The defect was invisible in code review and only appeared
 when real annotations produced a number too bad to be plausible -- which is
 its own useful signal. **An implausibly bad result deserves the same suspicion
 as an implausibly good one.**
+
+---
+
+## BUG-026 — Detection filtered by area, evaluation scored by major axis
+
+**Status:** Fixed · **Severity:** S2 · **Provenance:** `[OBSERVED]`
+**Surfaced in:** reviewing gate V4.7 output after the BUG-025 fix
+
+### Symptom
+None yet — found by comparing two thresholds that had never been compared,
+because until BUG-025 they were expressed in the same (wrong) units.
+
+### The inconsistency
+After BUG-025, evaluation keeps a ground-truth lesion when its **major axis**
+is at least 275 um. Post-processing (ADR-012) deleted a predicted component
+when its **area** was below 0.02 mm². Those are different shapes of filter:
+
+```
+275 x 275 um   axis 275 um (evaluable)   area 0.0756 mm^2   kept
+275 x  50 um   axis 275 um (evaluable)   area 0.0138 mm^2   DELETED
+400 x  40 um   axis 400 um (evaluable)   area 0.0160 mm^2   DELETED
+```
+
+An elongated deposit — which is a perfectly ordinary shape for tumor tracking
+along a sinus — would be found by the model, deleted by the pipeline, and
+scored by FROC as a miss. The model would be blamed for a plumbing decision.
+
+### Fix
+Post-processing now filters by major axis, measured the same way evaluation
+measures it (minimum rotated rectangle, `_major_axes`), at a default of
+100 um. That is well below the 275 um evaluability boundary, so **no lesion
+FROC can score is ever removed**, while sub-cellular speckle still goes.
+
+The area filter remains available as an optional secondary (`min_lesion_mm2`,
+default 0 = disabled).
+
+`Lesion` now carries `major_axis_um`, so the size a component was judged on is
+visible in the output rather than recomputed downstream.
+
+### Verification
+```
+axis filter (new)  : axis 398.0 um  area 0.01584 mm^2   KEPT
+area filter (old)  : deleted
+10 x 10 um speckle : removed by both
+```
+
+### Regression guard
+`tests/unit/test_postproc.py` — six cases, including one asserting the filter
+threshold stays below the evaluability boundary, and one asserting a predicted
+square and a ground-truth square of equal size measure equal.
+
+### Lesson
+Two thresholds that gate the same pipeline must be expressed in the same
+quantity, or there is a band where one accepts and the other rejects. This is
+the fourth units defect in the project (ADR-012, BUG-019, BUG-023, and now
+this one) — but the first where both units were individually reasonable and
+only the *pairing* was wrong. Gate V0.5 greps for hard-coded pixel constants;
+it cannot catch this. A checklist item for reviewing threshold pairs would.

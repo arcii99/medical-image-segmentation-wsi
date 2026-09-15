@@ -26,6 +26,23 @@ back to deflate automatically and the fixtures remain valid — just larger.
 That message means numpy and imagecodecs are ABI-mismatched in your
 environment; `pip install -U imagecodecs` restores the JPEG path.
 
+## Updating
+
+```bash
+bash update.sh          # newest wsi-metastasis-seg*.tar.gz in ~/Downloads
+python scripts/version.py
+```
+
+Use `bash update.sh`, not `./update.sh` — the execute bit does not survive
+every download path. `version.py` prints a tree hash covering src, scripts and
+configs; compare it against the hash quoted with the release.
+
+## No GPU on this machine?
+
+See `docs/COLAB.md`. Export a ~4 GB patch set, train on Colab or Kaggle, and
+pull the test slides straight from S3 inside the notebook rather than
+uploading them.
+
 ## Pipeline
 
 ```

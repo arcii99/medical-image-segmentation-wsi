@@ -1,0 +1,11 @@
+# Train from an exported patch set instead of the slide archive.
+#
+# Use when the GPU is somewhere the 230 GB of slides is not -- Colab, Kaggle,
+# a shared cluster with a small scratch quota. See docs/COLAB.md.
+data:
+  source: patchset
+  patchset_root: patchset       # directory holding shards/, files/, manifest.parquet
+train:
+  # Hard-negative mining needs the full normal pool, which an export does not
+  # carry. Disabled rather than silently operating on a subset.
+  hard_negative_start_epoch: 9999

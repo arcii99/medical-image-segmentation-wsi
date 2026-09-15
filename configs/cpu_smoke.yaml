@@ -1,0 +1,29 @@
+# CPU wiring smoke test (gate V6.2) -- NOT a training config.
+#
+# Purpose: prove the training path is wired correctly -- graph connected, loss
+# reducing properly, mask and image aligned, checkpoint complete. A model that
+# cannot memorise a single batch has a defect no amount of data will fix, and
+# that defect is worth finding before renting a GPU.
+#
+# What this is not: a way to train the model. UNet-EffNetB0 at 512 px runs
+# roughly 50-100x slower on CPU than on a modern GPU, so the 14-hour schedule
+# becomes several weeks. Use it to validate, then move to a GPU.
+#
+#   python scripts/03_train.py \
+#       --config configs/base.yaml configs/data_camelyon16.yaml \
+#               configs/model_unet_effb0.yaml configs/cpu_smoke.yaml
+hw:
+  device: cpu
+  dataloader_workers: 4
+  amp_dtype: float32          # bf16 autocast is a GPU path; disabled on CPU
+data:
+  augment: false              # memorisation test: remove the moving target
+train:
+  batch_size: 4               # 16 at 512px is slow on CPU; 4 keeps steps short
+  max_steps: 200
+  overfit_batches: 1
+  freeze_encoder_epochs: 0    # nothing frozen -- we want maximum capacity
+  warmup_epochs: 0
+  lr_decoder: 1.0e-3          # single batch, so push it
+  lr_encoder: 1.0e-4
+log_every: 10
