@@ -282,8 +282,16 @@ def main() -> int:
                  f" of {len(val_dl)}" if max_val else "")
         m = acc.summary()
         mw.log(epoch=epoch, phase="val", **m)
-        log.info("e%02d val dice=%.4f iou=%.4f tau=%.2f", epoch, m["dice"],
-                 m["iou"], m["threshold"])
+        log.info("e%02d val dice=%.4f iou=%.4f tau=%.2f | p(pos)=%.3f "
+                 "p(neg)=%.3f margin=%.3f", epoch, m["dice"], m["iou"],
+                 m["threshold"], m["p_pos"], m["p_neg"], m["margin"])
+        if m["margin"] == m["margin"] and m["margin"] < 0.10 and m["dice"] > 0.9:
+            log.warning("overlap is excellent but the confidence margin is "
+                        "%.3f -- predictions are clustered near 0.5. The shape "
+                        "is learned; the calibration is not. Expect tau to be "
+                        "unstable until the margin widens.", m["margin"])
+
+        gate_pass = bool(fixed_batches) and m["dice"] >= 0.97
 
         payload = dict(state_dict=model.state_dict(), ema_state_dict=model.state_dict(),
                        optimizer=opt.state_dict(), epoch=epoch,
@@ -301,6 +309,13 @@ def main() -> int:
             patience += 1
             if patience >= cfg.train.early_stop_patience:
                 log.info("early stop at epoch %d (best %.4f)", epoch, best); break
+
+        if gate_pass:
+            # The gate asks one yes/no question. Once answered, continuing is
+            # just burning time -- this ran for over an hour past the point of
+            # deciding, because the verdict was only printed after max_epochs.
+            log.info("overfit criterion met at epoch %d; stopping early", epoch)
+            break
 
     (Path(cfg.paths.ckpt) / "LATEST").write_text(run_id)
     log.info("done. best val dice %.4f -> %s", best, run_dir / "best.pt")

@@ -34,6 +34,12 @@ train:
   max_val_batches: 20        # ignored in overfit mode
   freeze_encoder_epochs: 0    # nothing frozen -- we want maximum capacity
   warmup_epochs: 0
-  lr_decoder: 1.0e-3          # single batch, so push it
+  # base.yaml scales LR by batch/16. At batch 4 that quarters whatever is
+  # written here, which is wrong for a memorisation test -- a single batch
+  # wants a large step, not one scaled down for a small batch.
+  lr_scale_with_batch: false
+  lr_decoder: 1.0e-3
   lr_encoder: 1.0e-4
+  # The gate exits as soon as dice >= 0.97, so this is only an upper bound.
+  max_epochs: 8
 log_every: 10

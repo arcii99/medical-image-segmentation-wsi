@@ -1342,3 +1342,73 @@ option is silently accepted, and the resulting run looks like a successful
 test of something it never tested. Any option that gates a decision should
 state its verdict explicitly and fail loudly when unmet — as this one now
 does.
+
+---
+
+## BUG-029 — Overfit gate passed at epoch 0, then ran for another hour
+
+**Status:** Fixed · **Severity:** S3 · **Provenance:** `[OBSERVED]`
+**Surfaced in:** the first successful run of gate V6.2
+
+### Symptom
+```
+e00 val dice=0.9988 iou=0.9977 tau=0.35     <- gate criterion (>=0.97) already met
+...
+e07 s00150 loss=0.2561                      <- still running 56 minutes later
+```
+The gate's verdict was only printed after the epoch loop finished, and
+`max_epochs` was 40. So a question answered in nine minutes took over three
+hours to report.
+
+### Fix
+Overfit mode now breaks out the moment validation Dice reaches the threshold,
+logs `overfit criterion met at epoch N; stopping early`, and returns.
+`cpu_smoke.yaml` also caps `max_epochs` at 8 as a backstop.
+
+### Lesson
+A gate answers a yes/no question. It should stop as soon as it can answer it,
+and say so at that moment -- not accumulate evidence and report at the end.
+
+---
+
+## OBS-001 — Excellent overlap, negligible confidence
+
+**Status:** Observed, not a defect · **Provenance:** `[OBSERVED]`
+**Surfaced in:** the same run
+
+### The observation
+```
+e06 val dice=0.9999 iou=0.9999 tau=0.80     train loss plateaued at ~0.375
+```
+Dice of 0.9999 with a loss stuck at 0.375 is contradictory only until the loss
+is decomposed:
+
+```
+loss   = 0.5*BCE(pos_weight=2) + 0.5*SoftDice
+dice   = 0.9999  ->  Dice term ~ 0.0001
+so      0.5*BCE ~ 0.375  ->  BCE ~ 0.75
+```
+
+A BCE of 0.75 on this class balance corresponds to probabilities of roughly
+**0.52** on the correct side. The model has learned the shape essentially
+perfectly and has almost no confidence margin.
+
+The fitted threshold corroborates it, wandering 0.35 -> 0.55 -> 0.80 -> 0.60
+-> 0.60 -> 0.75 -> 0.80 across epochs. When both classes cluster near 0.5,
+many thresholds separate them equally well and tau is underdetermined.
+
+### Why it matters
+Dice is threshold-swept, so it reports the best achievable overlap and is
+blind to margin. At inference the pipeline uses **one** fitted tau (ADR-006).
+A model with a 0.02 margin will have an unstable tau and will be fragile to
+any distribution shift, while looking solved by the headline metric.
+
+### Response
+Validation now reports mean predicted probability per class and the margin
+between them, and warns when Dice exceeds 0.9 with a margin under 0.10.
+
+This is expected during a short low-LR run -- the loss was still descending
+(0.375 -> 0.256 by epoch 7, consistent with p ~ 0.80) -- so it is recorded as
+something to watch on the real GPU run, not a defect. If the margin is still
+under ~0.2 after real training converges, tau is not trustworthy and
+calibration needs attention before any FROC number is reported.
