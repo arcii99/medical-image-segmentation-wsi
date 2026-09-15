@@ -1281,3 +1281,64 @@ every file.
 A default that is applied *after* user input is not a default; it is an
 override wearing a default's name. Defaults belong at the start of a merge
 chain, never the end.
+
+---
+
+## BUG-028 — The overfit gate was never implemented
+
+**Status:** Fixed · **Severity:** S1 (a gate that reported nothing)
+**Provenance:** `[OBSERVED]` · **Surfaced in:** first real CPU run of stage 03
+
+### Symptom
+```
+e00 s00000 loss=0.8671
+e00 s00050 loss=0.8521
+e00 s00100 loss=0.6548
+e00 s00150 loss=0.5775
+e00 s00190 loss=0.8579
+```
+Expected `loss <= 0.05` by step 200. It bounced between 0.57 and 0.92 instead.
+
+### Root cause
+`train.overfit_batches` appeared in `configs/cpu_smoke.yaml`, in
+`docs/verification_checklist.md`, and in every instruction that referenced
+gate V6.2 — but **nothing in `scripts/03_train.py` read it**. The loop pulled
+a fresh batch from the DataLoader every step, so the run was ordinary training
+on 200 different batches. A loss wandering between 0.57 and 0.92 over 200
+unrelated batches is unremarkable. It was neither a pass nor a failure; the
+test simply did not exist.
+
+This was the check described throughout the documentation as the most
+informative in the project: "a model that cannot memorise one batch has a
+wiring defect no amount of data will fix". It had never run.
+
+### How it survived so long
+Every earlier reference to V6.2 was a *plan* to run it, and the config key
+looked implemented because it was present and documented. The failure mode is
+specific to unimplemented options: an unknown key in a permissive config
+system is silently ignored, so the command succeeds, produces plausible
+output, and answers a different question than the one asked.
+
+### Fix
+* `overfit_batches` pins N batches and reuses them for every step.
+* Validation in overfit mode scores those same pinned batches — "can it
+  memorise these" is only answerable on those, not on a held-out set.
+* The run now prints an explicit verdict, `GATE V6.2 ... PASS/FAIL`, and exits
+  non-zero on failure. A gate that does not state its own verdict invites
+  exactly this kind of silent no-op.
+* The pinned batch's positive fraction is logged, with a warning if it is
+  almost pure background — Dice on an empty target is degenerate (BUG-006)
+  and would make the gate unreadable for a different reason.
+
+### Also fixed in the same pass
+`max_val_batches`. After `max_steps` the loop validated the full split:
+39,809 patches at batch 4 is ~10,000 forward passes, hours on CPU, printing
+nothing. Indistinguishable from a hang, and reported as one. Validation now
+logs progress and can be capped.
+
+### Lesson
+A config key is not a feature. In a permissive config system an unimplemented
+option is silently accepted, and the resulting run looks like a successful
+test of something it never tested. Any option that gates a decision should
+state its verdict explicitly and fail loudly when unmet — as this one now
+does.

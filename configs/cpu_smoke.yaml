@@ -27,7 +27,11 @@ train:
   # no traceback.
   batch_size: 4
   max_steps: 200
+  # Pin one batch and reuse it for every step. The question is
+  # whether the model CAN fit anything, not whether it
+  # generalises -- so validation scores the same batch.
   overfit_batches: 1
+  max_val_batches: 20        # ignored in overfit mode
   freeze_encoder_epochs: 0    # nothing frozen -- we want maximum capacity
   warmup_epochs: 0
   lr_decoder: 1.0e-3          # single batch, so push it

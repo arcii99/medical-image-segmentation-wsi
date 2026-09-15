@@ -8,6 +8,7 @@ threshold tau.  Stage 05 refuses to report numbers from a dirty tree
 """
 from __future__ import annotations
 
+import itertools
 import json
 import logging
 import subprocess
@@ -172,6 +173,29 @@ def main() -> int:
     amp = dict(device_type=dev.type, dtype=getattr(torch, cfg.hw.amp_dtype),
                enabled=dev.type == "cuda")
 
+    # ------------------------------------------------------------------
+    # Overfit mode (gate V6.2).
+    #
+    # Pin N batches and reuse them for every step. Without this the loop reads
+    # a fresh batch each step, which is ordinary training -- it cannot show
+    # whether the model is ABLE to fit anything, which is the entire question
+    # the gate asks.
+    #
+    # Validation runs on the same pinned batches: "can it memorise these" is
+    # only answerable by scoring those, not a held-out set.
+    # ------------------------------------------------------------------
+    n_overfit = int(cfg.train.get("overfit_batches", 0) or 0)
+    fixed_batches = None
+    if n_overfit:
+        fixed_batches = [b for _, b in zip(range(n_overfit), train_dl)]
+        pos = sum(float(b["mask"].mean()) for b in fixed_batches) / n_overfit
+        log.info("OVERFIT MODE: pinned %d batch(es), reused every step; "
+                 "mean positive fraction %.4f", n_overfit, pos)
+        if pos < 1e-4:
+            log.warning("the pinned batch is almost entirely background -- "
+                        "Dice will be degenerate. Re-run to draw another, or "
+                        "raise train.overfit_batches.")
+
     if a.dry_run:
         # Seconds, not minutes. Exercises every construction step and one full
         # optimisation step, which is where ordering and shape bugs live --
@@ -191,11 +215,11 @@ def main() -> int:
                                                cfg.train.grad_clip)
         opt.step(); opt.zero_grad(set_to_none=True)
         log.info("logits %s   loss %.4f   grad-norm %.4f",
-                 list(logits.shape), float(loss), float(gnorm))
+                 list(logits.shape), float(loss.detach()), float(gnorm))
         problems = []
         if list(logits.shape) != list(y.shape):
             problems.append(f"logits {list(logits.shape)} != mask {list(y.shape)}")
-        if not torch.isfinite(loss):
+        if not torch.isfinite(loss.detach()):
             problems.append("loss is not finite")
         if float(gnorm) == 0.0:
             problems.append("gradient norm is exactly 0 -- graph detached?")
@@ -218,7 +242,10 @@ def main() -> int:
     for epoch in range(start_epoch, int(cfg.train.max_epochs)):
         set_encoder_trainable(model, epoch >= cfg.train.freeze_encoder_epochs)
         model.train()
-        for step, batch in enumerate(train_dl):
+        epoch_iter = (itertools.islice(itertools.cycle(fixed_batches),
+                                       max_steps or len(fixed_batches))
+                      if fixed_batches else train_dl)
+        for step, batch in enumerate(epoch_iter):
             x = batch["image"].to(dev, non_blocking=True)
             y = batch["mask"].to(dev, non_blocking=True)
             with torch.autocast(**amp):
@@ -236,9 +263,23 @@ def main() -> int:
         sched.step()
 
         model.eval(); acc = ConfusionAccumulator()
+        # Validating the full split is the right default, but at 39,809
+        # patches and batch 4 that is ~10,000 forward passes -- hours on CPU,
+        # with nothing printed, which reads exactly like a hang.
+        max_val = int(cfg.train.get("max_val_batches", 0) or 0)
+        val_iter = (fixed_batches if fixed_batches
+                    else (itertools.islice(val_dl, max_val) if max_val
+                          else val_dl))
+        n_val = 0
         with torch.no_grad(), torch.autocast(**amp):
-            for batch in val_dl:
+            for batch in val_iter:
                 acc.update(model(batch["image"].to(dev)), batch["mask"].to(dev))
+                n_val += 1
+                if n_val % 50 == 0:
+                    log.info("  validating ... %d batches", n_val)
+        log.info("validated on %d batches%s", n_val,
+                 " (pinned overfit batches)" if fixed_batches else
+                 f" of {len(val_dl)}" if max_val else "")
         m = acc.summary()
         mw.log(epoch=epoch, phase="val", **m)
         log.info("e%02d val dice=%.4f iou=%.4f tau=%.2f", epoch, m["dice"],
@@ -263,6 +304,16 @@ def main() -> int:
 
     (Path(cfg.paths.ckpt) / "LATEST").write_text(run_id)
     log.info("done. best val dice %.4f -> %s", best, run_dir / "best.pt")
+
+    if fixed_batches:
+        ok = best >= 0.97
+        log.info("GATE V6.2 (overfit %d batch(es)): dice %.4f -> %s",
+                 n_overfit, best, "PASS" if ok else "FAIL")
+        if not ok:
+            log.error("the model could not memorise a single batch. That is a "
+                      "wiring defect -- detached graph, wrong loss reduction, "
+                      "mask/image mismatch -- and no amount of data fixes it.")
+        return 0 if ok else 1
     return 0
 
 

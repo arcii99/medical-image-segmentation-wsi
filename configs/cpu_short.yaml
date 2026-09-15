@@ -1,0 +1,21 @@
+# A short REAL training run on CPU -- not the overfit gate.
+#
+# Use to confirm the loss trends down on genuine batches before committing to
+# a GPU session. It will not reach a good model; CPU is 50-100x too slow.
+#
+#   python scripts/03_train.py \
+#       --config configs/base.yaml configs/data_camelyon16.yaml \
+#               configs/model_unet_effb0.yaml configs/cpu_short.yaml
+hw:
+  device: cpu
+  dataloader_workers: 2
+data:
+  augment: true
+train:
+  batch_size: 4
+  max_steps: 400
+  max_val_batches: 30        # full val is ~10,000 batches at this size
+  max_epochs: 2
+  freeze_encoder_epochs: 0
+  warmup_epochs: 0
+log_every: 20

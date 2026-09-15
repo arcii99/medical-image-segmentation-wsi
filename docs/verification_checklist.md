@@ -413,6 +413,12 @@ python scripts/03_train.py --set train.overfit_batches=1 train.max_steps=300 \
 memorise one batch has a wiring defect (detached graph, wrong loss reduction,
 mask/image mismatch), and no amount of data work will fix it.
 
+The run prints `GATE V6.2 ... PASS` or `FAIL` and exits non-zero on failure.
+Do not infer the verdict from the loss curve — read the verdict line. This
+gate silently did nothing at all until 0.7.5 (BUG-028), because the config key
+was documented but never implemented, and a wandering loss on 200 *different*
+batches looked like an ambiguous result rather than an absent test.
+
 ### V6.3 Loss behaviour on degenerate inputs (BUG-006)
 ```bash
 pytest tests/unit/test_losses.py -q -v
