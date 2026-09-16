@@ -170,8 +170,35 @@ def main() -> int:
     opt = torch.optim.AdamW(param_groups(model, cfg.train.lr_encoder,
                                          cfg.train.lr_decoder, cfg.train.weight_decay))
     sched = cosine_with_warmup(opt, cfg.train.warmup_epochs, cfg.train.max_epochs)
-    amp = dict(device_type=dev.type, dtype=getattr(torch, cfg.hw.amp_dtype),
+    # Autocast dtype has to match the hardware, not the config's preference.
+    #
+    # ADR-011 chose bfloat16 because it needs no loss scaler and keeps Dice
+    # sums over 262k pixels numerically safe. That reasoning holds only on
+    # Ampere (sm_80) and later. On Turing (T4, sm_75) and Volta there is no
+    # native bf16, so autocast runs a slow fallback path with no tensor-core
+    # acceleration -- measured at ~6x slower than expected on a T4.
+    #
+    # fp16 uses tensor cores on those cards, at the cost of needing a
+    # GradScaler: fp16's exponent range is narrow enough that gradients
+    # underflow to zero without loss scaling.
+    amp_dtype = getattr(torch, str(cfg.hw.amp_dtype))
+    if dev.type == "cuda":
+        cap = torch.cuda.get_device_capability()
+        gpu = torch.cuda.get_device_name()
+        log.info("GPU %s (sm_%d%d)", gpu, *cap)
+        if amp_dtype is torch.bfloat16 and cap[0] < 8:
+            log.warning("%s has no native bfloat16; using float16 + GradScaler "
+                        "instead. bf16 here would run ~6x slower.", gpu)
+            amp_dtype = torch.float16
+    amp = dict(device_type=dev.type, dtype=amp_dtype,
                enabled=dev.type == "cuda")
+    use_scaler = dev.type == "cuda" and amp_dtype is torch.float16
+    try:
+        scaler = torch.amp.GradScaler(dev.type, enabled=use_scaler)
+    except (AttributeError, TypeError):
+        scaler = torch.cuda.amp.GradScaler(enabled=use_scaler)
+    if use_scaler:
+        log.info("float16 autocast with GradScaler")
 
     # ------------------------------------------------------------------
     # Overfit mode (gate V6.2).
@@ -210,10 +237,12 @@ def main() -> int:
         with torch.autocast(**amp):
             logits = model(x)
             loss = crit(logits, y)
-        loss.backward()
+        scaler.scale(loss).backward()
+        scaler.unscale_(opt)
         gnorm = torch.nn.utils.clip_grad_norm_(model.parameters(),
                                                cfg.train.grad_clip)
-        opt.step(); opt.zero_grad(set_to_none=True)
+        scaler.step(opt); scaler.update()
+        opt.zero_grad(set_to_none=True)
         log.info("logits %s   loss %.4f   grad-norm %.4f",
                  list(logits.shape), float(loss.detach()), float(gnorm))
         problems = []
@@ -250,9 +279,13 @@ def main() -> int:
             y = batch["mask"].to(dev, non_blocking=True)
             with torch.autocast(**amp):
                 loss = crit(model(x), y)
-            loss.backward()
+            scaler.scale(loss).backward()
+            # Unscale before clipping, or the clip threshold is applied to
+            # scaled gradients and means nothing.
+            scaler.unscale_(opt)
             torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.train.grad_clip)
-            opt.step(); opt.zero_grad(set_to_none=True)
+            scaler.step(opt); scaler.update()
+            opt.zero_grad(set_to_none=True)
             if step % cfg.log_every == 0:
                 mw.log(epoch=epoch, step=step, loss=float(loss.detach()),
                        lr=opt.param_groups[-1]["lr"])

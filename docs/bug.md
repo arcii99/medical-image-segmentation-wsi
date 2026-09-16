@@ -1509,3 +1509,59 @@ A shared hook is an interface. Two implementations of a dataset agreed on
 their output contract and were assumed interchangeable, but nothing recorded
 what the *framework* would call on them. The gate caught it in seconds --
 which is the argument for V6.1 existing at all.
+
+---
+
+## BUG-031 — bfloat16 autocast on a pre-Ampere GPU ran ~6x slow
+
+**Status:** Fixed · **Severity:** S2 (throughput) · **Provenance:** `[OBSERVED]`
+**Surfaced in:** gate V6.2 on Colab
+
+### Symptom
+```
+13:25:09  e00 s00000 loss=0.9453
+13:27:28  e00 s00050 loss=0.5757      -> 2.66 s/step
+```
+Against ~0.45 s/step expected for UNet-EffNetB0 at 512 px, batch 16, on a T4.
+
+The measurement was unusually clean: in overfit mode the batch is pinned and
+reused, so no data loading happens at all. The 2.66 s was pure GPU compute,
+which rules out the DataLoader, the 2-core VM, and JPEG decode in one stroke.
+
+### Root cause
+ADR-011 specified `amp_dtype: bfloat16`, justified on two grounds: no loss
+scaler needed, and better numerical headroom for Dice sums over 262k pixels.
+Both hold -- **on Ampere**.
+
+```
+GPU    arch     sm    native bf16    fp16 tensor cores
+T4     Turing   75    NO             yes
+V100   Volta    70    NO             yes
+A100   Ampere   80    yes            yes
+```
+
+bfloat16 requires sm_80. On sm_75 autocast still runs, but down a fallback
+path with no tensor-core acceleration. Measured 5.9x slower, which matches the
+gap almost exactly.
+
+The config was hardware-dependent and did not say so, and the default was set
+against the hardware the design assumed rather than the hardware it would meet.
+
+### Fix
+The dtype is now chosen from `torch.cuda.get_device_capability()` at startup:
+bfloat16 on sm_80+, float16 below. float16 needs a `GradScaler` -- its
+exponent range is narrow enough that gradients underflow to zero without loss
+scaling -- so one is constructed and enabled only on that path.
+
+`scaler.unscale_(opt)` runs before `clip_grad_norm_`, or the clip threshold
+would be applied to scaled gradients and mean nothing.
+
+The GPU name and compute capability are now logged at startup, so this class
+of mismatch is visible in every run's first lines.
+
+### Lesson
+A config default encodes an assumption about hardware. Stating the preference
+(`bfloat16`) without stating the requirement (`sm_80+`) meant the system
+silently degraded instead of adapting. Anything in a config that only works on
+some hardware should be resolved at runtime against the hardware actually
+present -- and logged.
