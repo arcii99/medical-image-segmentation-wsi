@@ -1459,3 +1459,53 @@ An error raised four layers below the mistake will describe the layer, not the
 mistake. Where a whole class of failures has one cause -- here, the wrong
 interpreter -- check for that cause up front rather than letting each
 downstream component report its own symptom.
+
+---
+
+## BUG-030 — worker_init assumed the slide-backed dataset
+
+**Status:** Fixed · **Severity:** S1 (blocked all patchset training)
+**Provenance:** `[OBSERVED]` · **Surfaced in:** first Colab dry run, gate V6.1
+
+### Symptom
+```
+AttributeError: Caught AttributeError in DataLoader worker process 0.
+  File "src/data/dataset.py", line 116, in worker_init
+    ds._readers.clear(); ds._geoms.clear(); ds._pid = os.getpid()
+AttributeError: 'PatchSetDataset' object has no attribute '_readers'
+```
+Every worker died immediately. No patchset training was possible.
+
+### Root cause
+`worker_init` exists to stop slide handles being inherited across `fork`
+(BUG-002), so it reaches straight for `_readers` and `_geoms`. When the
+patchset backend was added (0.7.0) it reused the same `worker_init` -- the
+training loop passes it unconditionally -- but `PatchSetDataset` reads loose
+files and has neither attribute.
+
+The two backends were written to share an output contract (`image`, `mask`,
+`meta`) and that contract was honoured. What was missed is that they also
+share a *lifecycle* hook, and nothing stated what a dataset had to provide for
+it.
+
+### Fix
+`worker_init` now resets only what is present:
+
+* `_readers` / `_geoms` / `_pid` -- slide-backed only.
+* `rng` and `tf.rng` -- **both** backends, and this is the part that matters
+  for correctness rather than just not crashing. Without the reseed every
+  worker inherits the same seed and emits an identical augmentation sequence,
+  which quietly removes most of the augmentation's value. `PatchSetDataset`
+  now carries an `rng` so it participates.
+
+### Regression guard
+`tests/unit/test_worker_init.py` -- four cases: slide-like, patchset-like, a
+dataset with neither attribute, and an assertion that two workers draw
+different augmentation streams. The tests stub `torch` in `sys.modules` so
+they run without it installed.
+
+### Lesson
+A shared hook is an interface. Two implementations of a dataset agreed on
+their output contract and were assumed interchangeable, but nothing recorded
+what the *framework* would call on them. The gate caught it in seconds --
+which is the argument for V6.1 existing at all.

@@ -50,6 +50,9 @@ class PatchSetDataset(Dataset):
         if self.index.empty:
             raise ValueError(f"no patches for split {split!r} in {self.root}")
         self.tf = TrainTransform(seed) if train else EvalTransform()
+        # worker_init reseeds this per worker; without it every worker draws
+        # the identical augmentation sequence.
+        self.rng = np.random.default_rng(seed)
         log.info("patchset %s: %d patches from %d slides", split,
                  len(self.index), self.index.slide_id.nunique())
 

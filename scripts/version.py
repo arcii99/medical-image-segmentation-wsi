@@ -71,8 +71,12 @@ KNOWN_HASHES = {
     # pyproject + VERSION, excluding this file. Entries marked "old scheme"
     # were computed over narrower sets during 0.4-0.7 and are kept only to
     # identify a stale tree.
+    "0.8.2": "7b9c2016792a843e",
     "0.8.1": "d0bd2b78d7a92102",
+    "0.8.2": "7b9c2016792a843e",
     "0.8.1": "a2ba17dd32d79089",
+    "0.8.2": "7b9c2016792a843e",
+    "0.8.1": "2207c1e9a6201432",
     "0.8.0": "9abc903764072f14",
     "0.4.0 (old scheme)": "4dc9dde93baf0408",
     "0.5.0 (old scheme)": "c6a27035dd31fd51",

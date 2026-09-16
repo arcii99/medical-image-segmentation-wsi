@@ -1,6 +1,26 @@
-/artifacts/
+# Anchor these to the repository root with a leading slash.
+#
+# A bare "data/" matches ANY directory named data at ANY depth -- including
+# src/data/, which holds dataset.py, sampler.py, transforms.py, index.py and
+# patchset.py. Those five modules were silently never committed, and the
+# omission only surfaced when a clone failed its version check on another
+# machine. Same trap applies to artifacts/.
 /data/
+/artifacts/
+
 __pycache__/
 *.pyc
+*.pyo
 .pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# Generated fixtures -- rebuild with: python scripts/make_fixtures.py
 tests/fixtures/mini/*.tif
+tests/fixtures/mini/*.xml
+tests/fixtures/mini/reference_tissue/
+
+.ipynb_checkpoints/
+.DS_Store

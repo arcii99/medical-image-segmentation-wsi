@@ -109,11 +109,30 @@ class PatchDataset(Dataset):
 
 
 def worker_init(worker_id: int) -> None:
-    """Reset per-process state and decorrelate RNGs (BUG-002)."""
+    """Reset per-process state and decorrelate RNGs.
+
+    Shared by both dataset backends, so it must not assume either one's
+    internals. Slide-backed datasets carry per-process slide handles that
+    are unsafe to inherit across fork (BUG-002); a patchset dataset reads
+    loose files and has no handles at all. Reaching for `_readers`
+    unconditionally crashed every worker the first time a patchset was used.
+
+    The RNG reset is the part that matters for BOTH: without it all workers
+    inherit the same seed and produce identical augmentation sequences, which
+    silently removes most of the augmentation's value.
+    """
     import torch
     info = torch.utils.data.get_worker_info()
     ds = info.dataset
-    ds._readers.clear(); ds._geoms.clear(); ds._pid = os.getpid()
-    ds.rng = np.random.default_rng(1337 + worker_id)
-    if hasattr(ds.tf, "rng"):
-        ds.tf.rng = np.random.default_rng(9973 + worker_id)
+
+    if hasattr(ds, "_readers"):                 # slide-backed only
+        ds._readers.clear()
+        if hasattr(ds, "_geoms"):
+            ds._geoms.clear()
+        ds._pid = os.getpid()
+
+    if hasattr(ds, "rng"):
+        ds.rng = np.random.default_rng(1337 + worker_id)
+    tf = getattr(ds, "tf", None)
+    if tf is not None and hasattr(tf, "rng"):
+        tf.rng = np.random.default_rng(9973 + worker_id)
