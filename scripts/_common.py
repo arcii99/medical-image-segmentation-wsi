@@ -11,7 +11,14 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
+from src.utils.envcheck import assert_environment  # noqa: E402
+
+
 def base_parser(prog: str) -> argparse.ArgumentParser:
+    # Checked here so every stage script inherits it: a wrong-environment
+    # failure otherwise surfaces deep inside a worker process as an
+    # unrelated-looking AttributeError.
+    assert_environment()
     p = argparse.ArgumentParser(prog=prog)
     p.add_argument("--config", nargs="+",
                    default=["configs/base.yaml", "configs/data_camelyon16.yaml"])

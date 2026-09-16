@@ -1412,3 +1412,50 @@ This is expected during a short low-LR run -- the loss was still descending
 something to watch on the real GPU run, not a defect. If the margin is still
 under ~0.2 after real training converges, tau is not trustworthy and
 calibration needs attention before any FROC number is reported.
+
+---
+
+## BUG-030 — Wrong conda environment surfaced as an unrelated AttributeError
+
+**Status:** Fixed · **Severity:** S3 · **Provenance:** `[OBSERVED]`
+**Surfaced in:** first patchset export
+
+### Symptom
+```
+src.io.slide.SlideReadError: could not open normal_004.tif with any backend:
+  tiffslide: AttributeError: module 'numpy.dtypes' has no attribute 'StringDType'
+```
+wrapped in a `SlideReadError`, wrapped again in a `ProcessPoolExecutor`
+traceback.
+
+### Root cause
+The script was run from Anaconda's `base` environment rather than `wsi`. Base
+carries numpy 1.26.4 -- deliberately restored there after BUG-021's fallout --
+and `numpy.dtypes.StringDType` only exists in numpy 2, which tiffflile
+requires.
+
+So the chain was: wrong environment -> old numpy -> tiffslide import fails ->
+backend chain exhausted -> SlideReadError -> pool traceback. Four layers, none
+of which mention an environment.
+
+### Fix
+`src/utils/envcheck.py`, called at the top of every stage script. It checks
+numpy's major version and that tiffslide, shapely and cv2 actually import,
+then raises with the interpreter path, the numpy version, the exact symptom
+the user would otherwise have seen, and -- when the prefix looks like a conda
+base install -- the literal command to fix it.
+
+`scripts/version.py` now also prints the interpreter and numpy version, so
+"which environment am I in" is answered by the command already used to check
+everything else.
+
+### Regression guard
+`tests/unit/test_envcheck.py` -- four cases, including one asserting the
+message names `StringDType`, because the whole point is that the user can
+match the error they saw against the explanation.
+
+### Lesson
+An error raised four layers below the mistake will describe the layer, not the
+mistake. Where a whole class of failures has one cause -- here, the wrong
+interpreter -- check for that cause up front rather than letting each
+downstream component report its own symptom.

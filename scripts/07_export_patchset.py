@@ -45,6 +45,7 @@ from src.data import index as idx  # noqa: E402
 from src.io import annotations as ann  # noqa: E402
 from src.io.slide import open_slide  # noqa: E402
 from src.utils.config import load  # noqa: E402
+from src.utils.envcheck import assert_environment  # noqa: E402
 from src.utils.geometry import needs_resample  # noqa: E402
 
 MB = 1024 ** 2
@@ -185,6 +186,7 @@ def _export_slide(args) -> tuple[str, list[dict], bytes]:
 
 
 def main() -> int:
+    assert_environment()
     ap = argparse.ArgumentParser(prog="07_export_patchset")
     ap.add_argument("--config", nargs="+",
                     default=["configs/base.yaml", "configs/data_camelyon16.yaml"])

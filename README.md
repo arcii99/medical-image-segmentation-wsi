@@ -26,6 +26,13 @@ back to deflate automatically and the fixtures remain valid — just larger.
 That message means numpy and imagecodecs are ABI-mismatched in your
 environment; `pip install -U imagecodecs` restores the JPEG path.
 
+## Version control
+
+A `.gitignore` ships with the project. It excludes `data/` (the slide archive)
+and `artifacts/` (everything regenerable), so `git add -A` picks up code only.
+Verify with `git status --short` before the first commit: if you see `.tif`
+files listed, the ignore file is not being applied.
+
 ## Updating
 
 ```bash

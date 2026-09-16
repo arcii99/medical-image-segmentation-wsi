@@ -66,7 +66,7 @@ fi
 echo
 
 for item in src scripts configs docs tests notebooks VERSION Makefile \
-            pyproject.toml README.md .importlinter; do
+            pyproject.toml README.md .importlinter .gitignore; do
   [[ -e "$NEW/$item" ]] && cp -r "$NEW/$item" "$HERE/"
 done
 

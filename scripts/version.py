@@ -58,6 +58,9 @@ MARKERS = [
       ("scripts/03_train.py", "max_val_batches"),
       ("src/train/metrics.py", "def confidence"),
       ("docs/COLAB.md", "Why not just put the slides on Drive")]),
+    ("0.8.1", "environment preflight (wrong conda env named directly)",
+     [("src/utils/envcheck.py", "assert_environment"),
+      ("scripts/_common.py", "assert_environment")]),
 ]
 
 
@@ -68,6 +71,8 @@ KNOWN_HASHES = {
     # pyproject + VERSION, excluding this file. Entries marked "old scheme"
     # were computed over narrower sets during 0.4-0.7 and are kept only to
     # identify a stale tree.
+    "0.8.1": "d0bd2b78d7a92102",
+    "0.8.1": "a2ba17dd32d79089",
     "0.8.0": "9abc903764072f14",
     "0.4.0 (old scheme)": "4dc9dde93baf0408",
     "0.5.0 (old scheme)": "c6a27035dd31fd51",
@@ -80,7 +85,17 @@ def main() -> int:
     declared = (ROOT / "VERSION").read_text().strip() \
         if (ROOT / "VERSION").exists() else "<no VERSION file>"
     print(f"declared version : {declared}")
-    print(f"project root     : {ROOT}\n")
+    print(f"project root     : {ROOT}")
+    try:
+        sys.path.insert(0, str(ROOT))
+        from src.utils.envcheck import assert_environment, describe
+        print("  " + describe().replace("\n", "\n  "))
+        probs = assert_environment(strict=False)
+        for pr in probs:
+            print(f"  ENVIRONMENT PROBLEM: {pr}")
+    except Exception as e:  # noqa: BLE001
+        print(f"  (environment check unavailable: {e})")
+    print()
     print("  (this file ships with the tree, so it cannot detect a release")
     print("   newer than itself -- compare the tree hash below)\n")
 
@@ -114,7 +129,8 @@ def main() -> int:
     # This file itself is excluded: recording a hash inside it would change
     # it, and the hash would never settle.
     extra = [ROOT / "update.sh", ROOT / "VERSION", ROOT / "Makefile",
-             ROOT / "pyproject.toml"]
+             ROOT / "pyproject.toml",
+             ROOT / ".gitignore"]
     files = sorted(
         q for q in
         list((ROOT / "src").rglob("*.py"))
