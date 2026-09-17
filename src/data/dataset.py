@@ -35,14 +35,16 @@ class PatchDataset(Dataset):
     def __init__(self, index, slide_paths: dict[str, Path],
                  annotation_paths: dict[str, Path] | None = None,
                  train: bool = True, jitter: int = 128, seed: int = 1337,
-                 residual_scale: dict[str, float] | None = None):
+                 residual_scale: dict[str, float] | None = None,
+                 aug: dict | None = None):
         self.index = index.reset_index(drop=True)
         self.slide_paths = slide_paths
         self.annotation_paths = annotation_paths or {}
         self.train = train
         self.jitter = jitter if train else 0
         self.residual_scale = residual_scale or {}
-        self.tf = TrainTransform(seed) if train else EvalTransform()
+        self.tf = (TrainTransform(seed, **(aug or {})) if train
+                   else EvalTransform())
         self._readers: "OrderedDict[tuple[int,str], Any]" = OrderedDict()
         self._geoms: dict[str, Any] = {}
         self._pid = os.getpid()

@@ -1,0 +1,20 @@
+# For a GPU where this job may use about 5-6 GB.
+#
+# Typical use: a shared institutional card, where taking more than your share
+# is antisocial rather than merely risky.
+#
+# Memory model measured on a T4 with float16 autocast:
+#     total ~= 0.60 GB fixed + 0.150 GB per sample at 512x512
+#     batch 32 -> ~5.4 GB
+#
+# The cap is enforced, not just requested: exceeding it raises a normal CUDA
+# OOM rather than quietly consuming a colleague's headroom.
+hw:
+  device: cuda
+  max_gpu_gb: 5.5
+  dataloader_workers: 4        # raise to 8 if the machine has the cores
+train:
+  batch_size: 32
+  # lr_scale_with_batch (base.yaml) rescales the learning rate for batch 32
+  # automatically -- do not also change lr by hand.
+  max_val_batches: 100

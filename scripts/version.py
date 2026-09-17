@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import pathlib
+import re
 import sys
 from pathlib import Path
 
@@ -67,22 +68,69 @@ MARKERS = [
 # Tree hashes of published releases, so a stale tree can be identified even
 # when its own marker list predates the release it is missing.
 KNOWN_HASHES = {
+    "0.9.3": "b7b4ef99aa4646db",
+    "0.9.2": "47249ea2e23d56aa",
+    "0.9.1": "db3437ea73fb6f2f",
     # Hashes are over src + scripts + configs + update.sh + Makefile +
     # pyproject + VERSION, excluding this file. Entries marked "old scheme"
     # were computed over narrower sets during 0.4-0.7 and are kept only to
     # identify a stale tree.
     "0.8.2": "7b9c2016792a843e",
+    "0.8.6": "6a1f19e1217f7315",
     "0.8.1": "d0bd2b78d7a92102",
     "0.8.2": "7b9c2016792a843e",
+    "0.8.6": "6a1f19e1217f7315",
     "0.8.1": "a2ba17dd32d79089",
     "0.8.2": "7b9c2016792a843e",
+    "0.8.6": "6a1f19e1217f7315",
     "0.8.1": "2207c1e9a6201432",
+    "0.9.0": "c95e9afe17619bfb",
     "0.8.0": "9abc903764072f14",
     "0.4.0 (old scheme)": "4dc9dde93baf0408",
     "0.5.0 (old scheme)": "c6a27035dd31fd51",
     "0.6.0 (old scheme)": "8f480e32048247e9",
     "0.7.0 (old scheme)": "76602045f53100df",
 }
+
+
+def tree_hash() -> tuple[str, int]:
+    """The authoritative tree hash.
+
+    Exposed as a function, and writable via --record, because every time the
+    packaging step reimplemented this logic it drifted: a one-file difference
+    in the glob produced a different digest, and the recorded value then
+    disagreed with what the tool itself reported. One implementation, one
+    answer.
+    """
+    extra = [ROOT / "update.sh", ROOT / "VERSION", ROOT / "Makefile",
+             ROOT / "pyproject.toml", ROOT / ".importlinter"]
+    files = sorted(
+        q for q in
+        list((ROOT / "src").rglob("*.py"))
+        + list((ROOT / "scripts").rglob("*.py"))
+        + list((ROOT / "configs").rglob("*.yaml"))
+        + [e for e in extra if e.exists()]
+        if q.resolve() != pathlib.Path(__file__).resolve())
+    h = hashlib.sha256()
+    for q in files:
+        h.update(q.relative_to(ROOT).as_posix().encode())
+        h.update(q.read_bytes())
+    return h.hexdigest()[:16], len(files)
+
+
+def record() -> int:
+    """Write the current tree hash into KNOWN_HASHES for the current VERSION."""
+    ver = (ROOT / "VERSION").read_text().strip()
+    digest, n = tree_hash()
+    src = pathlib.Path(__file__)
+    s = src.read_text()
+    s = re.sub(rf'    "{re.escape(ver)}": "[0-9a-f]*",\n', "", s)
+    s = s.replace("KNOWN_HASHES = {\n", f'KNOWN_HASHES = {{\n    "{ver}": "{digest}",\n')
+    src.write_text(s)
+    after, _ = tree_hash()
+    print(f"recorded {ver} = {digest} over {n} files")
+    print("stable" if after == digest else f"UNSTABLE -- now {after}")
+    return 0 if after == digest else 1
 
 
 def main() -> int:
@@ -120,34 +168,8 @@ def main() -> int:
             worst = ver
 
     print()
-    # Hash everything that defines a release.
-    #
-    # This set has been widened twice, each time after a collision made the
-    # check useless. Hashing src/ alone made 0.6.0 and 0.6.1 identical (that
-    # release touched a script and a config). Adding scripts/ and configs/
-    # then made 0.7.0 and 0.7.1 identical (that one touched update.sh). The
-    # rule now is: if changing a file changes what the project does, it is in
-    # the hash. VERSION is included too, so no two releases can ever collide
-    # regardless of what else moved.
-    #
-    # This file itself is excluded: recording a hash inside it would change
-    # it, and the hash would never settle.
-    extra = [ROOT / "update.sh", ROOT / "VERSION", ROOT / "Makefile",
-             ROOT / "pyproject.toml",
-             ROOT / ".gitignore"]
-    files = sorted(
-        q for q in
-        list((ROOT / "src").rglob("*.py"))
-        + list((ROOT / "scripts").rglob("*.py"))
-        + list((ROOT / "configs").rglob("*.yaml"))
-        + [e for e in extra if e.exists()]
-        if q.resolve() != pathlib.Path(__file__).resolve())
-    h = hashlib.sha256()
-    for q in files:
-        h.update(q.relative_to(ROOT).as_posix().encode())
-        h.update(q.read_bytes())
-    digest = h.hexdigest()[:16]
-    print(f"tree hash        : {digest}  ({len(files)} files)")
+    digest, n_files = tree_hash()
+    print(f"tree hash        : {digest}  ({n_files} files)")
     print("  known release hashes:")
     for ver, hsh in sorted(KNOWN_HASHES.items()):
         mark = "  <-- this tree" if hsh == digest else ""
@@ -166,4 +188,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    import sys
+    raise SystemExit(record() if "--record" in sys.argv else main())

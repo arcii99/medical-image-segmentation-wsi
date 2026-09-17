@@ -1,0 +1,22 @@
+# For a 6 GB laptop GPU where this job may use at most ~4 GB.
+#
+# An RTX 4050 Laptop has 6 GB total, but the desktop compositor and browser
+# already hold several hundred megabytes, so the usable figure is nearer 5 GB.
+# Leaving ~1 GB of slack avoids the driver falling back to shared system
+# memory, which is far slower than simply using a smaller batch.
+#
+# Memory model: ~0.60 GB fixed + 0.150 GB per sample
+#     batch 20 -> ~3.6 GB, leaving headroom for fragmentation
+#
+# grad_accum_steps 2 restores an effective batch of 40 without paying for it
+# in memory: gradients from two micro-batches are summed before the optimiser
+# steps, so gradient noise and the tuned learning rate behave as if the batch
+# were 40.
+hw:
+  device: cuda
+  max_gpu_gb: 4.0
+  dataloader_workers: 4        # Windows spawns workers; 4 is usually the sweet spot
+train:
+  batch_size: 20
+  grad_accum_steps: 2          # effective batch 40
+  max_val_batches: 100

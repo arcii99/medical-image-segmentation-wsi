@@ -4,6 +4,13 @@
 # a shared cluster with a small scratch quota. See docs/COLAB.md.
 data:
   source: patchset
+  # Stain jitter costs ~8.6 ms/patch. On a 2-core VM that is the bottleneck,
+  # not the GPU. 0.5 roughly halves the cost for a modest loss of
+  # stain-invariance; raise it back to 0.8 on a machine with more cores.
+  p_stain: 0.5
+  p_blur: 0.3
+  # The exported patches are already JPEG q90 -- re-encoding models nothing new.
+  p_jpeg: 0.0
   patchset_root: patchset       # directory holding shards/, files/, manifest.parquet
 train:
   # Hard-negative mining needs the full normal pool. A BALANCED export does

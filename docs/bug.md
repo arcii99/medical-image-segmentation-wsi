@@ -1565,3 +1565,133 @@ A config default encodes an assumption about hardware. Stating the preference
 silently degraded instead of adapting. Anything in a config that only works on
 some hardware should be resolved at runtime against the hardware actually
 present -- and logged.
+
+---
+
+## OBS-002 — Data pipeline became the bottleneck once the GPU was fixed
+
+**Status:** Partially addressed · **Provenance:** `[OBSERVED]`
+**Surfaced in:** first real training run on Colab, after BUG-031
+
+### The measurement
+```
+pinned batch, no data loading (gate V6.2)   0.30 s/step
+real training, augment=True, 2 workers      0.98 s/step
+                                            ------------
+data pipeline                               ~0.68 s/step
+```
+Fixing the autocast dtype moved the bottleneck from the GPU to the CPU, which
+on a 2-core VM is where it now sits.
+
+### Profile, per patch
+```
+JPEG decode                3.22 ms
+geometric D4               1.21 ms
+HED stain jitter          12.70 ms   <- 62% of the cost
+GaussianBlur               0.80 ms
+JPEG re-encode (aug)       3.31 ms   <- redundant, see below
+normalize -> CHW float32   5.62 ms
+```
+
+### What was fixed
+1. **Stain jitter 12.70 -> 8.65 ms.** The forward transform begins with
+   `-log(x/255)` over 786k pixels, but the input is uint8, so there are only
+   256 possible results: a 256-entry lookup replaces the log entirely. The two
+   3x3 matmuls also collapse into one, since the whole operation is a single
+   affine map in optical-density space. Verified: at zero jitter the round
+   trip differs from the input by at most 1 grey level.
+2. **JPEG re-encode augmentation disabled by default.** Simulating compression
+   artifacts makes sense on lossless source data. An exported patch set is
+   already JPEG q90 -- re-encoding models nothing the network has not seen and
+   cost 3.3 ms on the critical path.
+3. **Probabilities are now config** (`data.p_stain`, `p_blur`, `p_jpeg`), so
+   augmentation can be traded against throughput without editing code.
+
+Net effect roughly 20%: ~21.4 -> ~17.2 ms per patch.
+
+### What was NOT fixed, and why it is probably the larger cost
+The dataset returns **float32 CHW**, so one batch of 16 is
+`16 x 3 x 512 x 512 x 4 B = 50 MB` shipped through DataLoader worker IPC every
+step. As uint8 it would be 12.6 MB. Normalising on the GPU instead would cut
+both the 5.62 ms CPU cost and 75% of the IPC volume.
+
+Not done here because it changes the dataset output contract and would touch
+both backends plus the inference path, and a run was in progress. Recorded as
+the first thing to try if throughput matters again.
+
+### Note on the profile numbers
+They were measured on a development container whose cores are considerably
+faster than the Colab VM's. The 0.68 s/step observed there is ~6x the ~115 ms
+these figures predict, so treat the profile as a guide to *proportions*, not
+as absolute timings.
+
+---
+
+## BUG-032 — Capped validation took the head of an ordered split
+
+**Status:** Fixed · **Severity:** S1 (metric silently meaningless)
+**Provenance:** `[OBSERVED]` · **Surfaced in:** first real Kaggle training run,
+end of epoch 0
+
+### Symptom
+```
+validated on 150 batches of 707
+e00 val dice=0.0000 iou=0.0000 tau=0.10 | p(pos)=0.000 p(neg)=0.032 margin=-0.032
+```
+After a full epoch -- three hours -- validation Dice was exactly zero. It looks
+like the model collapsed to predicting all-negative (BUG-006's signature).
+
+### What identified it instead
+Two values pin the cause precisely:
+
+* `p(pos)` is **exactly** 0.000. The accumulator computes
+  `sum(prob over positive pixels) / max(n_pos, 1)`, so an exact zero means
+  `n_pos == 0` -- there were no positive pixels to average over.
+* `tau` is **exactly** 0.10, the lowest value in the sweep. `best()` takes
+  `argmax` over per-threshold Dice; with every Dice at zero, argmax returns
+  index 0.
+
+Neither is what a collapsed model produces -- a collapsed model still has
+positive pixels in its ground truth. Both say the same thing: the validation
+subset contained no tumour at all.
+
+### Root cause
+`train.max_val_batches` was implemented as `itertools.islice(val_dl, n)` --
+the **first** n batches of a loader with `shuffle=False`.
+
+The exporter writes patches grouped by slide, so the manifest is ordered by
+`slide_id`. The first 2,400 of 11,310 validation patches therefore came from
+the first few slides in that order, and those were normal slides. Zero
+positives.
+
+```
+head of an ordered split : 0.0000 tumour   <- what happened
+random sample            : 0.2329 tumour   <- what was intended
+```
+
+The cap was added to stop validation dominating epoch time (BUG-028's second
+half). It fixed that and quietly broke the metric.
+
+### Why it mattered beyond the log line
+Three things read validation Dice: early stopping, `best.pt` selection, and
+the fitted threshold stored in the checkpoint. With Dice pinned at zero,
+`best.pt` would never improve after epoch 0, early stopping would fire after
+its 8-epoch patience, and the checkpoint would carry tau = 0.10 -- which
+inference uses directly.
+
+Training itself was unaffected: the sampler shuffles, so the model was
+learning normally the whole time.
+
+### Fix
+The subset is now **sampled** across the split with a fixed seed, drawn once
+before the epoch loop so the numbers stay comparable between epochs. The
+proportion carrying tumour is logged, and a subset with none raises rather
+than reporting a number. A separate guard refuses to record any validation
+result computed over zero positive pixels.
+
+### Lesson
+`shuffle=False` plus a head-slice is a sampling method, and a bad one whenever
+the underlying order carries structure. The order here was meaningful --
+grouped by slide -- which is exactly the case where taking a prefix stops
+being a sample and becomes a selection. If a cap exists to save time, it still
+has to be representative, or it is not measuring what its name says.

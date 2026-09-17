@@ -107,13 +107,20 @@ def main() -> int:
     assert not (set(tr.slide_id) & set(va.slide_id)), "slide-level split leakage"
 
 
+    aug_cfg = {k: float(cfg.data.get(k, d)) for k, d in
+               (("p_stain", 0.8), ("p_blur", 0.3), ("p_jpeg", 0.0))}
+    if not cfg.data.get("augment", True):
+        aug_cfg = {k: 0.0 for k in aug_cfg}
+    log.info("augmentation %s", aug_cfg)
+
     source = str(cfg.data.get("source", "slides"))
     if source == "patchset":
         # Portable exported patches -- no slide archive required. See
         # src/data/patchset.py for what this trades away.
         from src.data.patchset import PatchSetDataset
         root = cfg.data.patchset_root
-        train_ds = PatchSetDataset(root, "train", train=True, seed=cfg.seed)
+        train_ds = PatchSetDataset(root, "train", train=True, seed=cfg.seed,
+                                   aug=aug_cfg)
         val_ds = PatchSetDataset(root, "val", train=False, seed=cfg.seed)
         tr = pd.DataFrame({"tumor_frac": train_ds.index.tumor_frac,
                            "slide_id": train_ds.index.slide_id})
@@ -121,7 +128,7 @@ def main() -> int:
     else:
         train_ds = PatchDataset(tr, paths, anns, train=True,
                                 jitter=cfg.patching.jitter, seed=cfg.seed,
-                                residual_scale=resid)
+                                residual_scale=resid, aug=aug_cfg)
         val_ds = PatchDataset(va, paths, anns, train=False,
                               residual_scale=resid)
     sampler = BalancedSampler(tr, neg_per_pos=cfg.train.neg_per_pos,
@@ -135,6 +142,21 @@ def main() -> int:
                     want)
     dev = torch.device(want if (want == "cpu" or torch.cuda.is_available())
                        else "cpu")
+
+    # A hard ceiling on this process's GPU memory.
+    #
+    # On a shared machine, "my job only needs 5 GB" is a promise the process
+    # should be made to keep. set_per_process_memory_fraction makes an attempt
+    # to exceed it raise a normal CUDA OOM -- which the batch-halving retry
+    # below can catch -- instead of silently taking memory a colleague's job
+    # was relying on.
+    cap_gb = float(cfg.hw.get("max_gpu_gb", 0) or 0)
+    if dev.type == "cuda" and cap_gb > 0:
+        total_gb = torch.cuda.get_device_properties(dev).total_memory / 1024 ** 3
+        frac = min(max(cap_gb / total_gb, 0.05), 1.0)
+        torch.cuda.set_per_process_memory_fraction(frac, dev.index or 0)
+        log.info("GPU memory capped at %.1f GB of %.1f GB (%.0f%%)",
+                 cap_gb, total_gb, frac * 100)
 
     if dev.type == "cpu":
         # Rough activation budget for UNet-EffNetB0 in fp32, measured against
@@ -163,7 +185,44 @@ def main() -> int:
               prefetch_factor=4 if cfg.hw.dataloader_workers else None)
     train_dl = DataLoader(train_ds, batch_size=cfg.train.batch_size,
                           sampler=sampler, drop_last=True, **dl)
-    val_dl = DataLoader(val_ds, batch_size=cfg.train.batch_size, shuffle=False, **dl)
+    # Capping validation must SAMPLE the split, not take its head.
+    #
+    # The exporter writes patches grouped by slide, so the manifest is ordered
+    # by slide_id. Taking the first N batches therefore takes the first few
+    # slides -- and if those happen to be normal, the validation subset holds
+    # no tumour pixels at all. The symptom is dice exactly 0.0000 with
+    # p(pos) exactly 0.000 and tau pinned at the lowest swept value, which
+    # looks like a collapsed model and is not: training is unaffected, only
+    # the metric is blind.
+    #
+    # The sample is drawn once with a fixed seed, so it is identical every
+    # epoch and the numbers stay comparable.
+    max_val = int(cfg.train.get("max_val_batches", 0) or 0)
+    val_eval = val_ds
+    if max_val:
+        n_want = max_val * int(cfg.train.batch_size)
+        if n_want < len(val_ds):
+            rng_v = np.random.default_rng(int(cfg.seed))
+            pick = sorted(rng_v.choice(len(val_ds), n_want,
+                                       replace=False).tolist())
+            val_eval = torch.utils.data.Subset(val_ds, pick)
+            vi = getattr(val_ds, "index", None)
+            if vi is not None and "tumor_frac" in getattr(vi, "columns", []):
+                pos = float((vi.tumor_frac.iloc[pick] > 0).mean())
+                log.info("validation subset: %d of %d patches sampled, "
+                         "%.1f%% carry tumour", n_want, len(val_ds), pos * 100)
+                if pos == 0.0:
+                    raise SystemExit(
+                        "the sampled validation subset contains no tumour "
+                        "patches -- Dice and the fitted threshold would both "
+                        "be meaningless. Raise train.max_val_batches or drop "
+                        "the cap.")
+            else:
+                log.info("validation subset: %d of %d patches sampled",
+                         n_want, len(val_ds))
+
+    val_dl = DataLoader(val_eval, batch_size=cfg.train.batch_size,
+                        shuffle=False, **dl)
 
     model = build(cfg.model).to(dev)
     crit = build_loss(cfg.loss).to(dev)
@@ -259,6 +318,12 @@ def main() -> int:
         log.info("DRY RUN %s", "FAILED" if problems else "OK -- wiring is sound")
         return 1 if problems else 0
 
+    accum = max(1, int(cfg.train.get("grad_accum_steps", 1) or 1))
+    if accum > 1:
+        log.info("gradient accumulation x%d -> physical batch %d, "
+                 "effective batch %d", accum, cfg.train.batch_size,
+                 cfg.train.batch_size * accum)
+
     start_epoch, best, patience = 0, -1.0, 0
     if a.resume:
         ck = torch.load(a.resume, map_location="cpu")
@@ -278,14 +343,20 @@ def main() -> int:
             x = batch["image"].to(dev, non_blocking=True)
             y = batch["mask"].to(dev, non_blocking=True)
             with torch.autocast(**amp):
-                loss = crit(model(x), y)
+                loss = crit(model(x), y) / accum
             scaler.scale(loss).backward()
-            # Unscale before clipping, or the clip threshold is applied to
-            # scaled gradients and means nothing.
-            scaler.unscale_(opt)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.train.grad_clip)
-            scaler.step(opt); scaler.update()
-            opt.zero_grad(set_to_none=True)
+            # Step only every `accum` micro-batches. This keeps the EFFECTIVE
+            # batch (and therefore the gradient noise, and the learning rate
+            # that was tuned for it) unchanged while the memory footprint is
+            # set by the much smaller physical batch.
+            if (step + 1) % accum == 0:
+                # Unscale before clipping, or the clip threshold is applied to
+                # scaled gradients and means nothing.
+                scaler.unscale_(opt)
+                torch.nn.utils.clip_grad_norm_(model.parameters(),
+                                               cfg.train.grad_clip)
+                scaler.step(opt); scaler.update()
+                opt.zero_grad(set_to_none=True)
             if step % cfg.log_every == 0:
                 mw.log(epoch=epoch, step=step, loss=float(loss.detach()),
                        lr=opt.param_groups[-1]["lr"])
@@ -299,10 +370,7 @@ def main() -> int:
         # Validating the full split is the right default, but at 39,809
         # patches and batch 4 that is ~10,000 forward passes -- hours on CPU,
         # with nothing printed, which reads exactly like a hang.
-        max_val = int(cfg.train.get("max_val_batches", 0) or 0)
-        val_iter = (fixed_batches if fixed_batches
-                    else (itertools.islice(val_dl, max_val) if max_val
-                          else val_dl))
+        val_iter = fixed_batches if fixed_batches else val_dl
         n_val = 0
         with torch.no_grad(), torch.autocast(**amp):
             for batch in val_iter:
@@ -311,9 +379,14 @@ def main() -> int:
                 if n_val % 50 == 0:
                     log.info("  validating ... %d batches", n_val)
         log.info("validated on %d batches%s", n_val,
-                 " (pinned overfit batches)" if fixed_batches else
-                 f" of {len(val_dl)}" if max_val else "")
+                 " (pinned overfit batches)" if fixed_batches else "")
         m = acc.summary()
+        if dev.type == "cuda":
+            m["peak_mem_gb"] = torch.cuda.max_memory_allocated(dev) / 1024 ** 3
+            m["reserved_gb"] = torch.cuda.max_memory_reserved(dev) / 1024 ** 3
+            log.info("peak GPU memory %.2f GB allocated, %.2f GB reserved",
+                     m["peak_mem_gb"], m["reserved_gb"])
+            torch.cuda.reset_peak_memory_stats(dev)
         mw.log(epoch=epoch, phase="val", **m)
         log.info("e%02d val dice=%.4f iou=%.4f tau=%.2f | p(pos)=%.3f "
                  "p(neg)=%.3f margin=%.3f", epoch, m["dice"], m["iou"],

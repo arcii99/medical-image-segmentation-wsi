@@ -37,7 +37,7 @@ log = logging.getLogger(__name__)
 
 class PatchSetDataset(Dataset):
     def __init__(self, root: str | Path, split: str, train: bool = True,
-                 seed: int = 1337):
+                 seed: int = 1337, aug: dict | None = None):
         self.root = Path(root)
         self.files = self.root / "files"
         if not self.files.exists():
@@ -49,7 +49,8 @@ class PatchSetDataset(Dataset):
         self.index = man[man.split == split].reset_index(drop=True)
         if self.index.empty:
             raise ValueError(f"no patches for split {split!r} in {self.root}")
-        self.tf = TrainTransform(seed) if train else EvalTransform()
+        self.tf = (TrainTransform(seed, **(aug or {})) if train
+                   else EvalTransform())
         # worker_init reseeds this per worker; without it every worker draws
         # the identical augmentation sequence.
         self.rng = np.random.default_rng(seed)
