@@ -1695,3 +1695,73 @@ the underlying order carries structure. The order here was meaningful --
 grouped by slide -- which is exactly the case where taking a prefix stops
 being a sample and becomes a selection. If a cap exists to save time, it still
 has to be representative, or it is not measuring what its name says.
+
+---
+
+## BUG-033 — Resume searched only one of the two places a checkpoint can be
+
+**Status:** Fixed · **Severity:** S2 · **Provenance:** `[OBSERVED]`
+**Surfaced in:** Kaggle, after training stopped at epoch 6
+
+### Symptom
+Re-running the notebook restarted from epoch 0 with no warning, discarding six
+epochs of work.
+
+### Root cause
+The resume cell globbed `/kaggle/input/*/ckpt/*/last.pt` only. Checkpoints can
+be in two places:
+
+```
+/kaggle/working/ckpt/<run>/last.pt      this session (a re-run)        <- missed
+/kaggle/input/<ver>/ckpt/<run>/last.pt  a previous version, attached   <- found
+```
+
+Worse, it said nothing when it found neither -- it printed a single line about
+starting from scratch and proceeded. Kaggle wipes `/kaggle/working` between
+sessions, so unless the previous version is explicitly attached under *Input*
+there is genuinely nothing to resume from, and that is a user action the
+notebook cannot perform for itself.
+
+### Fix
+Search both locations, report which one was used, and when neither exists say
+plainly what has to be done (`Input -> Add Input -> Notebook Output`) rather
+than quietly beginning again.
+
+### Lesson
+A silent fallback to a reasonable default is the wrong behaviour when the
+default discards hours of work. Resuming is an intent; failing to resume
+should be loud.
+
+---
+
+## OBS-003 — Drive rate-limits gdown on a folder of large files
+
+**Status:** Mitigated · **Provenance:** `[OBSERVED]`
+
+### Symptom
+```
+100%|##########| 1.01G/1.01G [00:10<00:00, 94.9MB/s]   shard_0000.tar
+Failed to retrieve file url:
+    Cannot retrieve the public link of the file. You may need to change
+    the permission to 'Anyone with the link', or have had many accesses.
+```
+One shard at 95 MB/s, then refusal. The permission was correct; the limit is
+on how often a public link may be resolved.
+
+### Why it happens
+`gdown` does not use the Drive API. It scrapes the public download page per
+file, and Drive throttles that path. A folder of eleven 1 GB files trips it
+quickly, and gdown aborts the whole folder rather than the one file.
+
+### Mitigation
+1. **Retry.** gdown skips files already present, so each attempt fetches only
+   what is missing. Up to six attempts, stopping after two with no progress.
+2. **rclone fallback.** rclone uses the Drive API with your own OAuth token
+   and backs off properly. Enabled by putting `rclone.conf` in a Kaggle Secret
+   named `RCLONE_CONF`. Keep the notebook private -- that file holds a
+   refresh token.
+3. Once any complete copy exists, publish it as a Kaggle Dataset. Later
+   sessions attach it and Drive is never touched again.
+
+The 95 MB/s on the first shard is the useful number: the route is sound, only
+the link-resolution step is limited.
