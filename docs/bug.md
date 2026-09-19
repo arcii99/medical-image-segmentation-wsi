@@ -1850,3 +1850,43 @@ archives).
 "Return on first match" is the wrong strategy when matches are ranked by
 quality. The loop must survey all candidates and pick the best, not accept the
 first. This is the same shape as BUG-032: a selection dressed up as a search.
+
+---
+
+## BUG-036 — Kaggle's 50-file limit truncated the patchset upload
+
+**Status:** Fixed · **Severity:** S1 · **Provenance:** `[OBSERVED]`
+**Surfaced in:** Kaggle, after two runs both saw ~12% of the data
+
+### Symptom
+```
+pre-extracted set has 13960 jpg but manifest lists 116069 patches
+```
+Two separate committed runs each found exactly 13,960 patches (27,920 files).
+The manifest -- which uploads reliably, being one small file -- said 116,069.
+
+### Root cause
+Not bandwidth. `kaggle datasets files` showed the archives had been **expanded**
+into individual files: `shard_0000/normal_004_0_1024.jpg` and so on. Kaggle
+auto-extracts `.tar` on upload, turning 11 archives into 232,140 files.
+
+Kaggle datasets permit **50 top-level files** and are documented to require an
+archive above that. At ~4,600x the limit the upload was cut off around 13,960
+patches, and Kaggle reported the partial result as a complete dataset.
+
+The earlier `--dir-mode tar` flag did not prevent expansion, because Kaggle
+expands `.tar` regardless.
+
+### Fix
+Upload the shards inside a single **`.zip`**. Kaggle does not auto-expand
+`.zip`, so the dataset is one file, far under the limit. `make_kaggle_zip.sh`
+builds it (stored, not compressed -- the shards are already JPEG). The notebook
+gained a fourth data layout: a `.zip` is unzipped at runtime, then its `.tar`
+shards are extracted as before.
+
+### Lesson
+A platform limit expressed in file *count*, not size, is easy to miss when
+your data is 12 GB but 232,140 files. The relevant number was never the
+gigabytes. And a truncated upload that reports success is the worst kind: the
+manifest-vs-actual assertion (added for BUG-035) is the only reason this failed
+loudly instead of training on 12% of the data.
