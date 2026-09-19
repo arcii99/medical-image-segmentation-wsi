@@ -175,3 +175,38 @@ loading, not the GPU, is the bottleneck at that core count (OBS-002).
 [ ] first lines of the training log name the GPU and the float16 fallback
 [ ] training started via Save & Run All, not the editor
 ```
+
+---
+
+## Dataset layouts
+
+A Kaggle Dataset can arrive in three shapes depending on how it was uploaded,
+and the notebook handles all of them without configuration:
+
+```
+A  /kaggle/input/<slug>/shards/*.tar      directory uploaded intact
+B  /kaggle/input/<slug>/*.tar             archives uploaded as loose files
+C  /kaggle/input/<slug>/*.jpg + manifest  Kaggle expanded the archives itself
+```
+
+**C is the best case** -- there is nothing to extract. `/kaggle/input` is
+read-only, but the notebook symlinks it into place, which costs no disk and no
+time. A and B are extracted to `/kaggle/temp` as before, about five minutes.
+
+If the notebook reaches the Google Drive branch at all, it means none of these
+matched. Run the diagnostic below and check what is actually mounted:
+
+```python
+import glob, os
+for r in sorted(glob.glob('/kaggle/input/*')):
+    print(r)
+    print('   .tar     :', len(glob.glob(f'{r}/**/*.tar', recursive=True)))
+    print('   .jpg     :', len(glob.glob(f'{r}/**/*.jpg', recursive=True)))
+    print('   manifest :', glob.glob(f'{r}/**/manifest.parquet', recursive=True))
+```
+
+The usual cause is simply that the dataset was created but not added to the
+notebook: *Input -> Add Input -> Datasets -> Your Datasets*.
+
+Once a dataset is attached, clear `DRIVE_FOLDER_URL` in cell 1. Drive is then
+never contacted, and its rate limits stop mattering.

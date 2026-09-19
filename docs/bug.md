@@ -1765,3 +1765,88 @@ quickly, and gdown aborts the whole folder rather than the one file.
 
 The 95 MB/s on the first shard is the useful number: the route is sound, only
 the link-resolution step is limited.
+
+---
+
+## BUG-034 — Notebook edit dropped the find_source() call
+
+**Status:** Fixed · **Severity:** S2 · **Provenance:** `[OBSERVED]`
+**Surfaced in:** Kaggle, cell 4
+
+### Symptom
+```
+NameError: name 'SRC' is not defined
+   26 if SRC is None:
+```
+
+### Root cause
+A line-range edit to the notebook generator replaced the body of
+`find_source()` but also removed the following line, `SRC, HOW =
+find_source()`, that actually invoked it. The cell defined the function and
+then immediately used its result without calling it.
+
+A crude "did the feature land" grep confirmed the new function was present and
+reported success, but did not check that the function was still called. The
+presence of a definition is not evidence that it is used.
+
+### Fix
+Restored the call and added an assertion to the build check:
+`SRC, HOW = find_source()` must appear in the data cell.
+
+### Lesson
+Range-based edits are brittle: replacing lines i..j silently drops anything at
+j that was meant to survive. A post-generation check must assert on behaviour
+(the symbol is assigned) rather than on presence (the function is defined).
+
+---
+
+## BUG-035 — Extracted archives when the loose files were already present
+
+**Status:** Fixed · **Severity:** S1 (committed run died at extraction)
+**Provenance:** `[OBSERVED]` · **Surfaced in:** Kaggle, cell 9, committed run
+
+### Symptom
+```
+extracted 27,920 files
+files expected 232,138
+files present  27,920
+AssertionError: MISSING 204,218 files
+```
+The committed run began extracting the `.tar` archives, stopped 12% through
+(Kaggle's `/kaggle/temp` is far smaller than the working directory), and the
+completeness assert killed the notebook.
+
+An interactive scratch cell moments earlier had shown the data fully present as
+loose files -- `jpg 116069`, `png 116069`. So the data was there; the notebook
+chose to extract archives it did not need.
+
+### Root cause
+The dataset had been uploaded such that Kaggle mounted it **both** as loose
+`.jpg`/`.png` files and as the `.tar` archives -- two directory roots under
+`/kaggle/input`. `find_source()` returned on the first root that matched any
+layout, iterating roots in sorted order. The archive root sorted first, so it
+was selected and extraction began, even though a later root held the files
+already expanded.
+
+Two design faults, not one:
+* Preference was per-root, not global. The right rule is "prefer pre-extracted
+  across ALL roots, then fall back to archives", not "take whatever the first
+  root offers".
+* The pre-extracted test counted only `.jpg`. A root with images but no masks
+  would have passed it.
+
+### Fix
+* Scan every root for a **complete** pre-extracted set (`len(jpg) == len(png)`
+  and a manifest) before considering any archive.
+* In the pre-extracted branch, assert the file count matches the manifest
+  before symlinking, so an incomplete upload fails cheaply here rather than at
+  training time.
+
+Verified on the exact failure order (archive root sorting first) and on the
+incomplete case (jpg present, png missing -> correctly falls through to
+archives).
+
+### Lesson
+"Return on first match" is the wrong strategy when matches are ranked by
+quality. The loop must survey all candidates and pick the best, not accept the
+first. This is the same shape as BUG-032: a selection dressed up as a search.
