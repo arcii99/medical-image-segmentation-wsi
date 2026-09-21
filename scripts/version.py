@@ -68,6 +68,7 @@ MARKERS = [
 # Tree hashes of published releases, so a stale tree can be identified even
 # when its own marker list predates the release it is missing.
 KNOWN_HASHES = {
+    "0.9.10": "c250e635349a8969",
     "0.9.9": "17f1ac908c8b6f2b",
     "0.9.8": "6257afd32a4bebfc",
     "0.9.7": "fb31de282fbe239e",

@@ -24,3 +24,4 @@ tests/fixtures/mini/reference_tissue/
 
 .ipynb_checkpoints/
 .DS_Store
+/kaggle_zip/

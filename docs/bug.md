@@ -1890,3 +1890,41 @@ your data is 12 GB but 232,140 files. The relevant number was never the
 gigabytes. And a truncated upload that reports success is the worst kind: the
 manifest-vs-actual assertion (added for BUG-035) is the only reason this failed
 loudly instead of training on 12% of the data.
+
+---
+
+## BUG-037 — Resolver accepted a truncated-but-balanced dataset
+
+**Status:** Fixed · **Severity:** S2 · **Provenance:** `[OBSERVED]`
+**Surfaced in:** Kaggle, with both the broken and the fixed dataset attached
+
+### Symptom
+```
+pre-extracted set has 13960 jpg but manifest lists 116069 patches
+```
+The full 116,069-patch dataset was attached, but the resolver selected the old
+13,960-patch one and the completeness assert fired.
+
+### Root cause
+BUG-035's fix required `len(jpg) == len(png)` for a root to count as complete,
+to avoid picking an images-only upload. But the truncated dataset had been cut
+off at a patch boundary: 13,960 jpg AND 13,960 png -- balanced, just short. It
+passed the jpg==png test, sorted first, and won.
+
+The completeness check compared the two halves of the data to each other but
+never to the manifest, which is the actual source of truth for how many
+patches there should be.
+
+### Fix
+The resolver now reads the manifest per root and requires
+`len(jpg) == len(png) == len(manifest)`. A root short of the manifest is
+skipped with a message, so a complete root later in the sort order is chosen.
+Verified against the exact case: truncated root sorting first, complete root
+second -> the complete one is selected.
+
+### Lesson
+An internal consistency check (jpg matches png) is not a completeness check
+(matches the manifest). The first can pass on a partial-but-clean truncation;
+only comparison against the authority catches it. Same lesson as BUG-032 and
+BUG-035, now stated for the third time: check against the source of truth, not
+against a proxy that can agree with itself while being wrong.
