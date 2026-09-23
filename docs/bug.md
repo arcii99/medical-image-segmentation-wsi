@@ -1928,3 +1928,39 @@ An internal consistency check (jpg matches png) is not a completeness check
 only comparison against the authority catches it. Same lesson as BUG-032 and
 BUG-035, now stated for the third time: check against the source of truth, not
 against a proxy that can agree with itself while being wrong.
+
+---
+
+## BUG-038 — Patchset dataset assumed a flat files/ directory
+
+**Status:** Fixed · **Severity:** S1 · **Provenance:** `[OBSERVED]`
+**Surfaced in:** Kaggle, after the zip upload finally succeeded
+
+### Symptom
+The data was verified complete -- 116,069 jpg and 116,069 png, matching the
+manifest -- but every attempt to stage it into the flat `files/` layout the
+dataset expected failed. Kaggle had expanded the uploaded zip AND the tars
+inside it into a nested tree: `shards/shard_0000/<key>.jpg`,
+`shards/shard_0001/...`, and so on. A read-only input filesystem meant symlink
+workarounds failed too (a spurious "Read-only file system" on the link target).
+
+### Root cause
+`PatchSetDataset` read each image as `self.root/files/<key>.jpg` -- a flat
+lookup one directory deep. It had no way to find an image nested several levels
+below, and the whole staging dance existed only to force the data into that
+one shape.
+
+### Fix
+The dataset now detects a nested layout: if `files/` is absent or empty, it
+walks the root once with `rglob`, builds a `filename -> path` map, and reads
+through that. The flat path is unchanged and still preferred. This removes the
+need to extract, symlink or copy anything when the data is already unpacked --
+it is read in place from the read-only mount.
+
+Verified against a simulated `shards/shard_0000/*.jpg` tree.
+
+### Lesson
+The code dictated a storage shape and everything upstream had to contort to
+supply it. The more robust design is the reverse: let the reader adapt to the
+shapes the data actually arrives in. Three rounds of staging failures existed
+only because the dataset would accept exactly one layout.

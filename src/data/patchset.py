@@ -40,12 +40,27 @@ class PatchSetDataset(Dataset):
                  seed: int = 1337, aug: dict | None = None):
         self.root = Path(root)
         self.files = self.root / "files"
-        if not self.files.exists():
-            raise FileNotFoundError(
-                f"{self.files} not found. Extract the shards first:\n"
-                f"  mkdir -p {self.files} && "
-                f"for t in {self.root}/shards/*.tar; do tar xf $t -C {self.files}; done")
-        man = pd.read_parquet(self.root / "manifest.parquet")
+        # Locate images. The fast path is a flat files/ directory. But an
+        # exported patch set can also arrive already unpacked into a nested
+        # tree -- e.g. Kaggle expands shards into shards/shard_XXXX/*.jpg --
+        # in which case a flat lookup finds nothing. When files/ is absent or
+        # empty, build a filename -> path map by walking the whole root once.
+        self._map: dict[str, Path] | None = None
+        flat_ok = self.files.exists() and any(self.files.glob("*.jpg"))
+        if not flat_ok:
+            root_p = self.root
+            imgs = list(root_p.rglob("*.jpg")) + list(root_p.rglob("*.png"))
+            if not imgs:
+                raise FileNotFoundError(
+                    f"no .jpg/.png found under {self.root}. Extract the "
+                    f"shards first, or point patchset_root at the data.")
+            self._map = {f.name: f for f in imgs}
+            log.info("patchset: nested layout, indexed %d files under %s",
+                     len(self._map), self.root)
+        man_hits = list(self.root.rglob("manifest.parquet"))
+        if not man_hits:
+            raise FileNotFoundError(f"manifest.parquet not found under {self.root}")
+        man = pd.read_parquet(man_hits[0])
         self.index = man[man.split == split].reset_index(drop=True)
         if self.index.empty:
             raise ValueError(f"no patches for split {split!r} in {self.root}")
@@ -62,10 +77,16 @@ class PatchSetDataset(Dataset):
 
     def __getitem__(self, i: int):
         row = self.index.iloc[i]
-        img = cv2.imread(str(self.files / f"{row.key}.jpg"), cv2.IMREAD_COLOR)
-        msk = cv2.imread(str(self.files / f"{row.key}.png"), cv2.IMREAD_GRAYSCALE)
+        if self._map is not None:
+            jp = self._map.get(f"{row.key}.jpg")
+            mp = self._map.get(f"{row.key}.png")
+        else:
+            jp = self.files / f"{row.key}.jpg"
+            mp = self.files / f"{row.key}.png"
+        img = cv2.imread(str(jp), cv2.IMREAD_COLOR) if jp else None
+        msk = cv2.imread(str(mp), cv2.IMREAD_GRAYSCALE) if mp else None
         if img is None or msk is None:
-            raise FileNotFoundError(f"missing patch {row.key} under {self.files}")
+            raise FileNotFoundError(f"missing patch {row.key} under {self.root}")
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         x, m = self.tf(img, (msk > 127).astype(np.uint8))
         assert set(np.unique(m)) <= {0.0, 1.0}, "mask is no longer binary"
