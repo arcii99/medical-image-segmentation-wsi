@@ -34,6 +34,10 @@ from src.data.transforms import EvalTransform, TrainTransform
 
 log = logging.getLogger(__name__)
 
+# root -> {filename: path}. Populated once per process; the train and
+# val datasets share it instead of each walking the same tree.
+_INDEX_CACHE: dict[str, dict[str, Path]] = {}
+
 
 class PatchSetDataset(Dataset):
     def __init__(self, root: str | Path, split: str, train: bool = True,
@@ -48,15 +52,27 @@ class PatchSetDataset(Dataset):
         self._map: dict[str, Path] | None = None
         flat_ok = self.files.exists() and any(self.files.glob("*.jpg"))
         if not flat_ok:
-            root_p = self.root
-            imgs = list(root_p.rglob("*.jpg")) + list(root_p.rglob("*.png"))
-            if not imgs:
-                raise FileNotFoundError(
-                    f"no .jpg/.png found under {self.root}. Extract the "
-                    f"shards first, or point patchset_root at the data.")
-            self._map = {f.name: f for f in imgs}
-            log.info("patchset: nested layout, indexed %d files under %s",
-                     len(self._map), self.root)
+            # Walking a nested tree of ~232k files over a network mount costs
+            # about 11 minutes. Train and val are separate instances built
+            # back to back from the same root, so without a cache that price
+            # is paid twice per session for identical work.
+            key = str(self.root.resolve())
+            cached = _INDEX_CACHE.get(key)
+            if cached is not None:
+                self._map = cached
+                log.info("patchset: reusing cached index of %d files",
+                         len(self._map))
+            else:
+                imgs = (list(self.root.rglob("*.jpg"))
+                        + list(self.root.rglob("*.png")))
+                if not imgs:
+                    raise FileNotFoundError(
+                        f"no .jpg/.png found under {self.root}. Extract the "
+                        f"shards first, or point patchset_root at the data.")
+                self._map = {f.name: f for f in imgs}
+                _INDEX_CACHE[key] = self._map
+                log.info("patchset: nested layout, indexed %d files under %s",
+                         len(self._map), self.root)
         man_hits = list(self.root.rglob("manifest.parquet"))
         if not man_hits:
             raise FileNotFoundError(f"manifest.parquet not found under {self.root}")

@@ -1964,3 +1964,35 @@ The code dictated a storage shape and everything upstream had to contort to
 supply it. The more robust design is the reverse: let the reader adapt to the
 shapes the data actually arrives in. Three rounds of staging failures existed
 only because the dataset would accept exactly one layout.
+
+---
+
+## OBS-004 — Data verification cost hours of wall clock
+
+**Status:** Fixed · **Provenance:** `[OBSERVED]`
+**Surfaced in:** Kaggle, data cell running >2 h with no output
+
+### What happened
+The notebook's data cell ran five separate recursive globs (`*.jpg`, `*.png`,
+`*.tar`, `*.zip`, `manifest.parquet`) per attached input root, iterating over
+both `/kaggle/input/*` and `/kaggle/input/*/*`.
+
+A single recursive walk of the 232,138-file tree over Kaggle's network mount
+takes about 11 minutes. With two inputs attached and five globs each, the cell
+was doing 10+ such walks -- hours -- to re-confirm something already verified
+three times.
+
+### Fix
+1. The notebook now takes the data root directly rather than re-deriving it by
+   exhaustive search. Verification belongs in a one-off check, not on the path
+   of every run.
+2. `PatchSetDataset` caches its filename->path index per root in a
+   module-level dict. Train and val are separate instances built back to back
+   from the same root; without the cache each walked the tree, paying 11
+   minutes twice per session for identical work.
+
+### Lesson
+A correctness check that runs every time has to be cheap enough to run every
+time. Verifying data completeness is right; doing it with 10 full walks of a
+network mount is a check that costs more than the thing it protects. Verify
+once, record the result, and trust it.
