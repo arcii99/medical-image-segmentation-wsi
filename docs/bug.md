@@ -1996,3 +1996,70 @@ A correctness check that runs every time has to be cheap enough to run every
 time. Verifying data completeness is right; doing it with 10 full walks of a
 network mount is a check that costs more than the thing it protects. Verify
 once, record the result, and trust it.
+
+---
+
+## BUG-039 — zarr 3 renamed create_dataset; every heatmap write failed
+
+**Status:** Fixed · **Severity:** S1 · **Provenance:** `[OBSERVED]`
+**Surfaced in:** stage 04, first real inference run on Kaggle
+
+### Symptom
+```
+coverage: uncovered tissue 0.00%
+AttributeError: 'Group' object has no attribute 'create_dataset'
+```
+on every slide, after 3-6 minutes of GPU inference each. Six slides' work
+discarded before the operator noticed.
+
+### Root cause
+`write_zarr` used the zarr 2.x API. Zarr 3 renamed `Group.create_dataset` to
+`create_array` and replaced `compressor=` with `compressors=`. Kaggle ships
+zarr 3.4.0.
+
+### Fix
+Detect the major version and branch. Also added `read_zarr` so the read path
+is version-agnostic too. Verified on zarr 3.4.0: exact float16 roundtrip,
+4.73 MiB stored from 6.00 MiB raw.
+
+### Lesson
+The failure landed **after** all the expensive work. A dependency whose API can
+move should be exercised at startup on a trivial input, not first touched at
+the point of writing results. A one-pixel write at stage start would have
+turned six wasted inferences into an immediate, free error.
+
+---
+
+## BUG-040 — Low-weight warning measured over the whole heatmap
+
+**Status:** Fixed · **Severity:** S3 · **Provenance:** `[OBSERVED]`
+
+### Symptom
+```
+WARNING 91.7% of the heatmap has den < 0.050; check stride vs sigma
+```
+on every slide of a run whose reconstruction was provably correct
+(`uncovered tissue 0.00%` throughout).
+
+### Root cause
+The fraction was computed over the entire array. But the tissue gate discards
+most of a slide before inference -- a real run planned 6,725 positions out of
+81,890, about 8% -- so the remaining ~92% is background that was never
+written and legitimately has `den ≈ 0`.
+
+The warning therefore fired on every correct run, reporting almost exactly the
+background fraction. A warning that always fires is worse than no warning: it
+trains the operator to ignore the channel that is supposed to carry real
+problems.
+
+### Fix
+Measure the low-weight fraction over **written** pixels only
+(`den >= hole_den`). Simulated at 8% coverage: old metric 92.0% (warns), new
+metric 0.0% (silent). Genuinely thin coverage inside the tissue region still
+trips it.
+
+### Lesson
+A denominator chosen without thinking about what is actually in it produces a
+statistic that is technically true and operationally useless. "Fraction of the
+heatmap" and "fraction of the part we computed" differ by an order of
+magnitude here, and only the second answers the question being asked.

@@ -10,14 +10,40 @@ import numpy as np
 
 def write_zarr(path: str | Path, heat: np.ndarray, attrs: dict[str, Any],
                chunk: int = 1024) -> Path:
-    import numcodecs
+    """Write the heatmap as a chunked, compressed zarr array.
+
+    Supports both zarr 2.x and 3.x. Version 3 renamed ``create_dataset`` to
+    ``create_array`` and replaced the ``compressor=`` argument with
+    ``compressors=``. The old call raises
+    ``AttributeError: 'Group' object has no attribute 'create_dataset'`` on
+    zarr 3 -- after the GPU work is already done, which is the worst possible
+    place to discover a dependency break.
+    """
     import zarr
     path = Path(path); path.parent.mkdir(parents=True, exist_ok=True)
     root = zarr.open(str(path), mode="w")
-    root.create_dataset("heat", data=heat, chunks=(chunk, chunk),
-                        compressor=numcodecs.Blosc("zstd", clevel=5), overwrite=True)
+
+    major = int(zarr.__version__.split(".")[0])
+    if major >= 3:
+        from zarr.codecs import BloscCodec
+        arr = root.create_array(
+            "heat", shape=heat.shape, chunks=(chunk, chunk), dtype=heat.dtype,
+            compressors=[BloscCodec(cname="zstd", clevel=5)], overwrite=True)
+        arr[:] = heat
+    else:
+        import numcodecs
+        root.create_dataset(
+            "heat", data=heat, chunks=(chunk, chunk),
+            compressor=numcodecs.Blosc("zstd", clevel=5), overwrite=True)
     root.attrs.update(attrs)
     return path
+
+
+def read_zarr(path: str | Path):
+    """Read back a heatmap written by :func:`write_zarr` (either zarr major)."""
+    import zarr
+    root = zarr.open(str(path), mode="r")
+    return np.asarray(root["heat"]), dict(root.attrs)
 
 
 def render_overlay(thumb_rgb: np.ndarray, heat: np.ndarray,

@@ -61,7 +61,11 @@ class StitchConfig:
     eps: float = 1e-8
     window_floor: float = 1e-3         # see gaussian_window()
     hole_den: float = 1e-6             # below this, the pixel was never written
-    low_weight_den: float = 0.05       # reported, not fatal
+    # Reported, not fatal, and measured over WRITTEN pixels only (see
+    # finalize). At stride S/2 with sigma S/8 the worst-covered interior
+    # pixel accumulates about 0.55, so 0.05 is a sane floor for genuinely
+    # thin coverage.
+    low_weight_den: float = 0.05
     coverage_max_uncovered: float = 1e-4
 
 
@@ -280,10 +284,24 @@ class GaussianStitcher:
         num = np.asarray(self.num[:, :], dtype=np.float32)
         den = np.asarray(self.den[:, :], dtype=np.float32)
 
-        self.low_weight_frac = float((den < self.cfg.low_weight_den).mean())
+        # Measure over WRITTEN pixels only.
+        #
+        # The tissue gate discards ~92% of a slide before inference -- a real
+        # run planned 6,725 positions out of 81,890 -- so most of the heatmap
+        # is background that was never written and legitimately has den ~ 0.
+        # Taking the fraction over the whole array therefore reported 89-97%
+        # "low weight" on every correct run, which is a warning that always
+        # fires and so teaches you to ignore warnings.
+        written = den >= self.cfg.hole_den
+        n_written = int(written.sum())
+        if n_written:
+            self.low_weight_frac = float(
+                (den[written] < self.cfg.low_weight_den).mean())
+        else:
+            self.low_weight_frac = 0.0
         if self.low_weight_frac > 0.30:
-            log.warning("%.1f%% of the heatmap has den < %.3f; check stride "
-                        "vs sigma", self.low_weight_frac * 100,
+            log.warning("%.1f%% of WRITTEN heatmap area has den < %.3f; "
+                        "check stride vs sigma", self.low_weight_frac * 100,
                         self.cfg.low_weight_den)
 
         heat = num / (den + self.cfg.eps)
