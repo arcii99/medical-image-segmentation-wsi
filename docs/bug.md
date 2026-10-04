@@ -2063,3 +2063,58 @@ A denominator chosen without thinking about what is actually in it produces a
 statistic that is technically true and operationally useless. "Fraction of the
 heatmap" and "fraction of the part we computed" differ by an order of
 magnitude here, and only the second answers the question being asked.
+
+---
+
+## BUG-041 — Evaluation matched heatmap pixels against level-0 polygons
+
+**Status:** Fixed · **Severity:** S1 (FROC would read ~0 on a working model)
+**Provenance:** `[OBSERVED]` · **Surfaced in:** first real inference, probing
+why a confident detection scored as a miss
+
+### Symptom
+On `tumor_001` the model produced a clean detection -- 2,062 contiguous
+heatmap pixels, major axis 180 um, peak score 0.880 -- inside a slide with
+0.6724 mm² of annotated tumour. `F.match` returned `hit=False`.
+
+Meanwhile `normal_036` produced zero detections and never exceeded 0.395,
+so the model itself was discriminating correctly.
+
+### Root cause
+Stage 05 passed `geom.lesions()` straight into `F.match`. Those polygons are
+in **level-0 pixels** (INV-1, the project's universal coordinate frame).
+Predicted lesion centroids are in **heatmap pixels**, which are `downsample`
+times coarser -- 8x by ADR-009.
+
+Comparing them puts the two sets of coordinates an order of magnitude apart:
+```
+centroid, heatmap px : (  8,908,  16,635)
+centroid, level-0 px : ( 71,266, 133,080)
+polygon bounds       : level-0, hundreds of thousands
+```
+Every prediction therefore falls outside every polygon. All detections become
+false positives, all lesions become misses, and FROC reports approximately
+zero no matter how good the model is.
+
+The docstring on `F.match` does say "gt_polys : ground-truth polygons in the
+HEATMAP coordinate frame". Stage 05 simply did not honour it, and nothing
+checked.
+
+### Fix
+Stage 05 scales the polygons by `1/downsample` (read from the heatmap's own
+attrs, not assumed) before matching. Verified on a synthetic case: unscaled
+gives `hit=False`, scaled gives `hit=True`.
+
+### Why this was nearly invisible
+It produces no error, no warning, and a plausible-looking number. A FROC of
+0.00 would have been read as "the model does not work" -- and the model
+demonstrably does. The only reason it surfaced is that a single slide was
+probed by hand before trusting the aggregate.
+
+### Lesson
+A documented precondition that nothing enforces is a comment, not a contract.
+`match()` should assert its inputs are in the frame it claims to need -- a
+cheap bounds check against the heatmap shape would have failed loudly on the
+first call. This is the fourth coordinate/units defect in the project
+(BUG-003, BUG-013, BUG-026, now this), and the first to reach the metric
+itself.

@@ -32,6 +32,7 @@ def main() -> int:
 
     import torch
     import zarr
+    from shapely.affinity import scale as shp_scale
 
     ck = torch.load(Path(cfg.paths.ckpt) / a.run_id / "best.pt", map_location="cpu")
     assert_reportable(ck, a.allow_dirty)
@@ -53,7 +54,15 @@ def main() -> int:
         lab, lesions = apply(heat, tau, mpp, PostProcConfig(**cfg.postproc.to_dict()))
         xml = Path(s.path).with_suffix(".xml")
         geom = ann.load(xml if xml.exists() else None, s.slide_id)
-        gt_polys = geom.lesions()
+
+        # Annotations are in LEVEL-0 pixels (INV-1); predicted lesion
+        # centroids are in HEATMAP pixels, which are `downsample` times
+        # coarser (ADR-009, 8x). Matching them without converting compares
+        # coordinates ~8x apart: every prediction becomes a false positive and
+        # every lesion a miss, so FROC reads ~0 on a working model.
+        ds = float(z.attrs.get("downsample", 1.0))
+        gt_polys = [shp_scale(g, xfact=1.0 / ds, yfact=1.0 / ds, origin=(0, 0))
+                    for g in geom.lesions()]
 
         d, n, n_i = F.match(lesions, gt_polys, s.slide_id, mpp)
         dets += d; n_gt += n; n_itc += n_i
